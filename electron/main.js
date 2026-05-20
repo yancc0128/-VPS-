@@ -1,0 +1,353 @@
+const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const crypto = require("node:crypto");
+const path = require("node:path");
+const { Client } = require("ssh2");
+
+const isDev = process.env.ELECTRON_DEV === "1";
+
+function createWindow() {
+  const mainWindow = new BrowserWindow({
+    width: 1180,
+    height: 820,
+    minWidth: 980,
+    minHeight: 680,
+    title: "自托管 VPS 安全部署助手",
+    icon: path.join(__dirname, "..", "assets", "icon.png"),
+    backgroundColor: "#f2f2f7",
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, "preload.js"),
+      sandbox: true
+    }
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const currentUrl = mainWindow.webContents.getURL();
+    if (currentUrl && url !== currentUrl && !url.startsWith("file://")) {
+      event.preventDefault();
+    }
+  });
+
+  const entry = isDev
+    ? path.join(__dirname, "..", "index.html")
+    : path.join(__dirname, "..", "dist", "web", "index.html");
+
+  mainWindow.loadFile(entry);
+}
+
+app.whenReady().then(() => {
+  createWindow();
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+function runSshAdminTest({ host, port, username, password }) {
+  return new Promise((resolve) => {
+    const conn = new Client();
+    const result = {
+      ok: false,
+      sshOk: false,
+      sudoOk: false,
+      sudoUser: "",
+      hostFingerprint: "",
+      system: "",
+      error: ""
+    };
+
+    const finish = (patch = {}) => {
+      Object.assign(result, patch);
+      conn.end();
+      resolve(result);
+    };
+
+    conn
+      .on("ready", () => {
+        result.sshOk = true;
+        conn.exec("uname -a && sudo -S -p '' whoami", { pty: false }, (err, stream) => {
+          if (err) {
+            finish({ error: "SSH 已连接，但无法执行 sudo 测试。" });
+            return;
+          }
+
+          let stdout = "";
+          let stderr = "";
+          stream
+            .on("close", (code) => {
+              const lines = stdout
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter(Boolean);
+              result.system = lines[0] || "";
+              result.sudoUser = lines[lines.length - 1] || "";
+              result.sudoOk = code === 0 && result.sudoUser === "root";
+              finish({
+                ok: result.sshOk && result.sudoOk,
+                error: result.sudoOk ? "" : stderr || "sudo whoami 未返回 root。"
+              });
+            })
+            .on("data", (data) => {
+              stdout += data.toString("utf8");
+            })
+            .stderr.on("data", (data) => {
+              stderr += data.toString("utf8");
+            });
+
+          stream.write(`${password}\n`);
+          stream.end();
+        });
+      })
+      .on("error", (error) => {
+        finish({ error: error.message || "SSH 连接失败。" });
+      })
+      .connect({
+        host,
+        port: Number(port) || 22,
+        username,
+        password,
+        readyTimeout: 15000,
+        keepaliveInterval: 5000,
+        hostHash: "sha256",
+        hostVerifier: (hash) => {
+          result.hostFingerprint = `SHA256:${hash}`;
+          return true;
+        }
+      });
+  });
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function generateRealityKeys() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("x25519");
+  const publicJwk = publicKey.export({ format: "jwk" });
+  const privateJwk = privateKey.export({ format: "jwk" });
+
+  if (!publicJwk.x || !privateJwk.d) {
+    throw new Error("当前系统无法导出 X25519 Reality 密钥。");
+  }
+
+  return {
+    publicKey: publicJwk.x,
+    privateKey: privateJwk.d
+  };
+}
+
+function deploymentActionScript(action, payload) {
+  const tempUser = String(payload.tempUser || "appdeploy").trim();
+  const tempPassword = String(payload.tempPassword || "");
+  const sshPort = Number(payload.sshPort) || 22;
+  const servicePort = Number(payload.servicePort) || 443;
+  const protocol = String(payload.protocolName || "VLESS + REALITY + Vision");
+  const serverConfigJson = String(payload.serverConfigJson || "");
+
+  switch (action) {
+    case "create-temporary":
+      return `
+set -e
+TEMP_USER=${shellQuote(tempUser)}
+TEMP_PASSWORD=${shellQuote(tempPassword)}
+if ! id "$TEMP_USER" >/dev/null 2>&1; then
+  useradd -m -s /bin/bash "$TEMP_USER"
+fi
+printf '%s:%s\\n' "$TEMP_USER" "$TEMP_PASSWORD" | chpasswd
+usermod -aG sudo "$TEMP_USER"
+id "$TEMP_USER"
+`;
+    case "verify-deploy-user":
+      return "whoami && sudo -S -p '' whoami";
+    case "system-check":
+      return `
+set -e
+uname -a
+if command -v lsb_release >/dev/null 2>&1; then lsb_release -a || true; fi
+command -v apt-get >/dev/null 2>&1 && echo apt-get-ready
+`;
+    case "install-dependencies":
+      return `
+set -e
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip tar ca-certificates ufw
+`;
+    case "configure-firewall":
+      return `
+set -e
+ufw allow ${sshPort}/tcp
+ufw allow ${servicePort}/tcp
+ufw --force enable
+ufw status verbose
+`;
+    case "install-proxy-service":
+      if (!serverConfigJson) {
+        throw new Error("缺少服务端协议配置，无法生成可用订阅链接。");
+      }
+
+      return `
+set -e
+echo "准备部署协议: ${protocol}"
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "当前系统不支持 systemctl，无法继续服务部署。" >&2
+  exit 1
+fi
+if ! command -v xray >/dev/null 2>&1; then
+  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+fi
+install -d -m 755 /usr/local/etc/xray
+cat > /usr/local/etc/xray/config.json <<'XRAY_CONFIG'
+${serverConfigJson}
+XRAY_CONFIG
+systemctl enable xray
+systemctl restart xray
+systemctl --no-pager --full status xray
+echo "协议服务配置已写入并重启，下一步会验证服务端口。"
+`;
+    case "verify-service":
+      return `
+set -e
+systemctl --no-pager --full status xray
+ss -tulpen | grep ":${servicePort}"
+echo "服务状态检查完成。"
+`;
+    default:
+      throw new Error("未知部署动作。");
+  }
+}
+
+function runSshAction({ host, port, username, password, sudoPassword, action, actionPayload }) {
+  return new Promise((resolve) => {
+    const conn = new Client();
+    const result = {
+      ok: false,
+      stdout: "",
+      stderr: "",
+      error: "",
+      action
+    };
+
+    const finish = (patch = {}) => {
+      Object.assign(result, patch);
+      conn.end();
+      resolve(result);
+    };
+
+    let script = "";
+    try {
+      script = deploymentActionScript(action, actionPayload || {});
+    } catch (error) {
+      resolve({ ...result, error: error.message || "部署动作无效。" });
+      return;
+    }
+
+    conn
+      .on("ready", () => {
+        const wrapped = action === "system-check"
+          ? `bash -lc ${shellQuote(script)}`
+          : `sudo -S -p '' bash -lc ${shellQuote(script)}`;
+
+        conn.exec(wrapped, { pty: false }, (err, stream) => {
+          if (err) {
+            finish({ error: "SSH 已连接，但无法执行当前部署动作。" });
+            return;
+          }
+
+          stream
+            .on("close", (code) => {
+              finish({
+                ok: code === 0,
+                error: code === 0 ? "" : result.stderr || "当前步骤执行失败。"
+              });
+            })
+            .on("data", (data) => {
+              result.stdout += data.toString("utf8");
+            })
+            .stderr.on("data", (data) => {
+              result.stderr += data.toString("utf8");
+            });
+
+          if (action !== "system-check") {
+            stream.write(`${sudoPassword || password}\n`);
+          }
+          stream.end();
+        });
+      })
+      .on("error", (error) => {
+        finish({ error: error.message || "SSH 连接失败。" });
+      })
+      .connect({
+        host,
+        port: Number(port) || 22,
+        username,
+        password,
+        readyTimeout: 15000,
+        keepaliveInterval: 5000
+      });
+  });
+}
+
+ipcMain.handle("ssh:test-admin", async (_event, payload) => {
+  const host = String(payload?.host || "").trim();
+  const port = String(payload?.port || "22").trim();
+  const username = String(payload?.username || "").trim();
+  const password = String(payload?.password || "");
+
+  if (!host || !username || !password) {
+    return {
+      ok: false,
+      sshOk: false,
+      sudoOk: false,
+      error: "请填写 VPS IP、长期管理员用户名和密码。"
+    };
+  }
+
+  return runSshAdminTest({ host, port, username, password });
+});
+
+ipcMain.handle("crypto:generate-reality-keys", async () => generateRealityKeys());
+
+ipcMain.handle("ssh:run-deployment-action", async (_event, payload) => {
+  const host = String(payload?.host || "").trim();
+  const port = String(payload?.port || "22").trim();
+  const username = String(payload?.username || "").trim();
+  const password = String(payload?.password || "");
+  const sudoPassword = String(payload?.sudoPassword || password);
+  const action = String(payload?.action || "");
+
+  if (!host || !username || !password || !action) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: "",
+      error: "缺少 VPS、账号、密码或部署动作。"
+    };
+  }
+
+  return runSshAction({
+    host,
+    port,
+    username,
+    password,
+    sudoPassword,
+    action,
+    actionPayload: payload
+  });
+});

@@ -1,0 +1,81 @@
+{
+  "name": "privacy-vps-deploy-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Privacy-first local VPS security deployment assistant.",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "npm run dev:web",
+    "dev:web": "python3 -m http.server 5173",
+    "dev:electron": "ELECTRON_DEV=1 electron .",
+    "build:web": "node scripts/build-web.mjs",
+    "preview": "npm run build:web && electron .",
+    "pack": "npm run build:web && electron-builder --dir",
+    "dist": "npm run build:web && electron-builder",
+    "dist:win": "npm run build:web && electron-builder --win portable --x64",
+    "dist:mac": "npm run build:web && electron-builder --mac dmg zip --arm64",
+    "check": "node --check app.js",
+    "serve:android-preview": "python3 -m http.server 5173",
+    "serve:windows-preview": "python3 -m http.server 5173"
+  },
+  "build": {
+    "appId": "com.local.privacyvps.deployassistant",
+    "productName": "VPS Deploy Assistant",
+    "directories": {
+      "output": "release"
+    },
+    "icon": "assets/icon.png",
+    "files": [
+      "electron/**/*",
+      "assets/icon.png",
+      "dist/web/**/*",
+      "node_modules/ssh2/**/*",
+      "node_modules/asn1/**/*",
+      "node_modules/bcrypt-pbkdf/**/*",
+      "node_modules/tweetnacl/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "icon": "assets/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities",
+      "artifactName": "VPS-Deploy-Assistant-macOS-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "VPS-Deploy-Assistant-Windows-${version}-portable.${ext}"
+    },
+    "portable": {
+      "artifactName": "VPS-Deploy-Assistant-Windows-${version}-portable.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  }
+}

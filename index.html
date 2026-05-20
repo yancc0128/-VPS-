@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>自托管 VPS 安全部署助手</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">隐私优先 · 本地生成 · 可审计流程</p>
+        <h1>自托管 VPS 安全部署助手</h1>
+      </div>
+      <div class="privacy-pill" title="不会上传 VPS IP、SSH 密码、私钥、节点配置或订阅链接">本地运行</div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar" aria-label="部署步骤">
+        <ol class="steps">
+          <li class="active">选择模式</li>
+          <li>SSH 验证</li>
+          <li>临时部署账号</li>
+          <li>部署前确认</li>
+          <li>生成脚本与配置</li>
+          <li>安全报告</li>
+        </ol>
+      </aside>
+
+      <section class="workspace">
+        <section class="panel mode-gate" id="modeGate">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">部署开始前必须选择</p>
+              <h2>部署模式</h2>
+            </div>
+          </div>
+          <div class="mode-grid">
+            <label class="choice-card selected" for="modeStandard">
+              <input type="radio" id="modeStandard" name="deployMode" value="standard" checked />
+              <span class="choice-title">标准部署</span>
+              <span class="choice-copy">不启用 AI，不上传日志、配置或错误信息，按固定安全流程执行。</span>
+            </label>
+            <label class="choice-card" for="modeAi">
+              <input type="radio" id="modeAi" name="deployMode" value="ai" />
+              <span class="choice-title">智能助手部署</span>
+              <span class="choice-copy">仅允许分析本地脱敏内容，提供解释、协议建议和预设安全动作。</span>
+            </label>
+          </div>
+          <button class="primary" id="confirmMode">确认模式并继续</button>
+        </section>
+
+        <div id="appBody" class="hidden">
+          <section class="flow-control" aria-label="流程控制">
+            <button class="ghost" id="backToMode" type="button">返回选择部署模式</button>
+            <span>误点确认也可以返回修改，已填写内容仍只保留在本机页面内存中。</span>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">第 1 步</p>
+                <h2>VPS SSH 连接与长期管理员验证</h2>
+              </div>
+              <span class="status-dot pending" id="adminVerifyStatus">未验证</span>
+            </div>
+            <p class="muted">长期账号用于以后维护 VPS。桌面版会先在本机测试 SSH 登录和 <code>sudo whoami</code>，确认输出为 <code>root</code> 后才继续后续部署。</p>
+            <div class="form-grid">
+              <label>
+                <span>VPS IP</span>
+                <input id="vpsIp" inputmode="numeric" autocomplete="off" placeholder="203.0.113.10" />
+              </label>
+              <label>
+                <span>SSH 端口</span>
+                <input id="sshPort" inputmode="numeric" autocomplete="off" value="22" />
+              </label>
+              <label>
+                <span>长期管理员用户名</span>
+                <input id="adminUser" autocomplete="off" value="myadmin" />
+              </label>
+              <label>
+                <span>长期管理员密码</span>
+                <input id="adminPassword" type="password" autocomplete="new-password" placeholder="仅用于本机 SSH 验证，不保存" />
+              </label>
+              <label class="span-2">
+                <span>首次 SSH 连接看到的 host key 指纹</span>
+                <input id="hostFingerprint" autocomplete="off" placeholder="自动验证后显示，或手动填写 SHA256:..." />
+              </label>
+            </div>
+            <div class="actions">
+              <button class="primary" id="testAdminSsh" type="button">测试长期账号 SSH 和 sudo</button>
+            </div>
+            <p class="hint" id="adminVerifyHint">密码只保存在当前页面内存中。Web 预览版不能直接 SSH，请使用下方命令手动验证。</p>
+          </section>
+
+          <section class="panel manual-fallback collapsed">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">辅助命令</p>
+                <h2>建立或确认长期管理员账号</h2>
+              </div>
+              <button class="icon-btn" data-copy="adminCommands" title="复制命令">复制</button>
+            </div>
+            <p class="muted">推荐使用普通管理员账号加 sudo，不推荐长期使用 root 密码登录。</p>
+            <pre id="adminCommands"><code>sudo adduser myadmin
+sudo usermod -aG sudo myadmin
+
+ssh myadmin@VPS_IP
+sudo whoami</code></pre>
+            <p class="hint">如果 <code>sudo whoami</code> 输出 <code>root</code>，说明长期管理员账号可用。</p>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">第 2 步</p>
+                <h2>选择部署身份</h2>
+              </div>
+            </div>
+            <p class="muted">推荐创建 App 专用临时部署账号并切换过去部署；如果你更重视简单流程，也可以继续使用已验证的长期管理员账号。</p>
+            <div class="mode-grid">
+              <label class="choice-card selected" for="deployWithTemp">
+                <input type="radio" id="deployWithTemp" name="deployIdentity" value="temporary" checked />
+                <span class="choice-title">创建临时账号并切换部署</span>
+                <span class="choice-copy">推荐。部署完成后删除临时账号，长期管理员账号只用于维护。</span>
+              </label>
+              <label class="choice-card" for="deployWithAdmin">
+                <input type="radio" id="deployWithAdmin" name="deployIdentity" value="admin" />
+                <span class="choice-title">直接使用长期管理员部署</span>
+                <span class="choice-copy">流程更简单，但长期管理员账号会贯穿部署过程。</span>
+              </label>
+            </div>
+            <div class="manual-fallback collapsed">
+              <pre id="tempCommands"><code>sudo adduser appdeploy
+sudo usermod -aG sudo appdeploy</code></pre>
+            </div>
+          </section>
+
+          <section class="panel" id="temporaryAccountPanel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">第 3 步</p>
+                <h2>临时账号连接信息</h2>
+              </div>
+              <span class="status-dot" id="privacyStatus">不保存到磁盘</span>
+            </div>
+            <div class="form-grid">
+              <label>
+                <span>临时用户名</span>
+                <input id="tempUser" autocomplete="off" value="appdeploy" />
+              </label>
+              <label>
+                <span>临时密码</span>
+                <input id="tempPassword" type="password" autocomplete="new-password" placeholder="仅保存在当前页面内存中" />
+              </label>
+            </div>
+            <p class="hint">首次连接时请核对 host key 指纹。密码不会进入日志、报告、配置文件或导出内容。</p>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">第 4 步</p>
+                <h2>部署前确认</h2>
+              </div>
+            </div>
+            <div class="checklist">
+              <label><input type="checkbox" class="precheck" id="confirmAdminCreated" /> 我已经创建或确认长期管理员账号。</label>
+              <label><input type="checkbox" class="precheck" id="confirmAdminSsh" /> 我已经测试长期账号可以 SSH 登录。</label>
+              <label><input type="checkbox" class="precheck" id="confirmAdminSudo" /> 我已经测试长期账号可以执行 sudo。</label>
+              <label id="temporaryCleanupCheck"><input type="checkbox" class="precheck" id="confirmTempCleanup" /> 我理解 App 临时账号部署完成后会被删除。</label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">第 5 步</p>
+                <h2>选择服务端协议</h2>
+              </div>
+              <button class="ghost" id="revealToggle">显示敏感字段</button>
+            </div>
+            <p class="muted">先选择要部署到 VPS 的服务端协议和端口。部署执行向导会按这里的选择安装和配置服务。</p>
+            <div class="protocol-grid" id="protocolGrid"></div>
+            <div class="form-grid">
+              <label>
+                <span>代理服务端口</span>
+                <input id="servicePort" inputmode="numeric" value="443" />
+              </label>
+              <label>
+                <span>REALITY serverName</span>
+                <input id="serverName" autocomplete="off" value="www.cloudflare.com" />
+              </label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">第 6 步</p>
+                <h2>部署执行向导</h2>
+              </div>
+              <span class="status-dot pending" id="deployRunStatus">未开始</span>
+            </div>
+            <p class="muted">点击开始后，桌面版会按预设安全动作自动逐步部署。当前步骤会转圈，完成后自动打勾；失败时会停止并显示脱敏结果。</p>
+            <div class="runner">
+              <ol id="deployStepList" class="runner-steps"></ol>
+              <div class="runner-console">
+                <div class="runner-title" id="deployCurrentTitle">等待开始</div>
+                <p id="deployCurrentHint">完成 SSH 验证和部署前确认后，点击开始部署。</p>
+                <pre class="runner-result"><code id="deployResult">暂无执行结果。</code></pre>
+                <div class="actions">
+                  <button class="primary" id="runDeployStep" type="button" disabled>开始自动部署</button>
+                  <button class="ghost" id="resetDeployFlow" type="button">重置部署流程</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">第 7 步</p>
+                <h2>生成客户端配置与订阅链接</h2>
+              </div>
+            </div>
+            <p class="muted">服务端部署完成后，在本机生成多客户端配置、订阅链接和安全报告。</p>
+            <div class="client-picker">
+              <div class="client-picker-head">
+                <div>
+                  <span class="mini-title">客户端软件配置</span>
+                  <p>可多选。用户有多个软件时，会一次性生成多份本地配置。</p>
+                </div>
+                <label class="select-all"><input type="checkbox" id="selectAllClients" checked /> 全选</label>
+              </div>
+              <div class="client-list">
+                <label><input type="checkbox" class="client-target" value="singbox" checked /> sing-box</label>
+                <label><input type="checkbox" class="client-target" value="mihomo" checked /> Mihomo / Clash Meta</label>
+                <label><input type="checkbox" class="client-target" value="surge" checked /> Surge / Stash</label>
+                <label><input type="checkbox" class="client-target" value="links" checked /> Shadowrocket / v2rayN 链接</label>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="primary" id="generateAll" disabled>本地生成部署脚本和客户端配置</button>
+              <button class="ghost" id="clearSecrets">清空本页敏感数据</button>
+            </div>
+          </section>
+
+          <section class="panel ai-panel hidden" id="aiPanel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">受限智能助手</p>
+                <h2>本地脱敏预览</h2>
+              </div>
+              <button class="ghost" id="disableAi">关闭 AI 辅助</button>
+            </div>
+            <textarea id="aiInput" rows="5" placeholder="粘贴错误日志，本地脱敏后再用于 AI 分析"></textarea>
+            <div class="actions">
+              <button class="secondary" id="sanitizeAi">生成脱敏内容</button>
+            </div>
+            <pre id="aiOutput"><code></code></pre>
+          </section>
+
+          <section class="panel output-panel">
+            <div class="tabs" role="tablist" aria-label="输出内容">
+              <button class="tab active" data-tab="script">部署脚本</button>
+              <button class="tab" data-tab="singbox">sing-box</button>
+              <button class="tab" data-tab="mihomo">Mihomo</button>
+              <button class="tab" data-tab="surge">Surge/Stash</button>
+              <button class="tab" data-tab="links">客户端链接</button>
+              <button class="tab" data-tab="report">安全报告</button>
+            </div>
+            <div class="output-head">
+              <span id="outputTitle">等待生成</span>
+              <button class="icon-btn" id="copyOutput" disabled title="复制当前完整内容">复制完整内容</button>
+            </div>
+            <pre class="output"><code id="outputCode">请先完成模式选择、账号确认和连接信息填写。</code></pre>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">脱敏日志</p>
+                <h2>本地执行记录</h2>
+              </div>
+            </div>
+            <div id="logView" class="log-view" aria-live="polite"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
