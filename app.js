@@ -24,9 +24,9 @@ const clientTargets = {
 };
 
 const state = {
-  mode: null,
+  mode: "standard",
   protocol: "vless",
-  deployIdentity: "temporary",
+  deployIdentity: "admin",
   reveal: false,
   outputs: {},
   currentTab: "script",
@@ -35,7 +35,15 @@ const state = {
   adminVerification: null,
   deploymentStepIndex: 0,
   deploymentCompleted: false,
-  deploymentRunning: false
+  deploymentRunning: false,
+  claudeRaw: "",
+  claudeSummary: "",
+  bbrRaw: "",
+  bbrSummary: "",
+  autofixRaw: "",
+  autofixSummary: "",
+  stepResults: {},
+  deploymentOutcome: "idle"
 };
 
 const el = (id) => document.getElementById(id);
@@ -47,7 +55,21 @@ const sensitivePatterns = [
   [/(privateKey|password|passwd|pwd|uuid|shortId|server|address|host|sni)(\s*[:=]\s*)("[^"]+"|'[^']+'|[^\s,\n]+)/gi, "$1$2[已隐藏]"],
   [/vless:\/\/[^\s"']+/gi, "[订阅链接已隐藏]"],
   [/(?<![\/\w-])(?:[a-z0-9-]+\.)+(?:com|net|org|io|dev|app|cn|top|xyz|cloud|co|me|info|biz|site|online|link)(?![\w-])/gi, (match) => {
-    const safeInfrastructureDomains = ["www.cloudflare.com", "github.com", "raw.githubusercontent.com"];
+    const safeInfrastructureDomains = [
+      "www.cloudflare.com",
+      "github.com",
+      "raw.githubusercontent.com",
+      "claude.ai",
+      "anthropic.com",
+      "api.anthropic.com",
+      "console.anthropic.com",
+      "statsig.anthropic.com",
+      "intercom.io",
+      "intercomcdn.com",
+      "statsig.com",
+      "sentry.io",
+      "ipinfo.io"
+    ];
     if (safeInfrastructureDomains.includes(match.toLowerCase())) return match;
     return "[域名已隐藏]";
   }]
@@ -119,8 +141,6 @@ function values() {
     ip: el("vpsIp").value.trim(),
     sshPort: el("sshPort").value.trim() || "22",
     adminUser: el("adminUser").value.trim() || "myadmin",
-    tempUser: el("tempUser").value.trim() || "appdeploy",
-    deployIdentity: state.deployIdentity,
     servicePort: el("servicePort").value.trim() || protocols[state.protocol].port,
     serverName: el("serverName").value.trim() || "www.cloudflare.com",
     hostFingerprint: el("hostFingerprint").value.trim()
@@ -129,9 +149,7 @@ function values() {
 
 function validInputs() {
   const v = values();
-  const checks = els(".precheck").every((box) => box.checked);
-  const identityReady = state.deployIdentity === "admin" || Boolean(v.tempUser && el("tempPassword").value);
-  return Boolean(state.mode && state.adminVerified && state.deploymentCompleted && v.ip && v.sshPort && identityReady && v.servicePort && checks && selectedClients().length);
+  return Boolean(state.adminVerified && state.deploymentCompleted && v.ip && v.sshPort && v.servicePort && selectedClients().length);
 }
 
 function updateGenerateState() {
@@ -141,30 +159,6 @@ function updateGenerateState() {
 
 function setStep(index) {
   els(".steps li").forEach((item, i) => item.classList.toggle("active", i === index));
-}
-
-function setupProtocols() {
-  const grid = el("protocolGrid");
-  grid.innerHTML = "";
-
-  Object.entries(protocols).forEach(([key, protocol]) => {
-    const card = document.createElement("div");
-    card.className = `protocol-card ${key === state.protocol ? "selected" : ""}`;
-    card.innerHTML = `
-      <div class="protocol-title">${protocol.name}</div>
-      <div class="protocol-copy">${protocol.summary}</div>
-      <button class="ghost" type="button">选择</button>
-    `;
-    card.querySelector("button").addEventListener("click", () => {
-      state.protocol = key;
-      el("servicePort").value = protocol.port;
-      state.secrets = null;
-      setupProtocols();
-      resetDeployFlow(false);
-      log(`协议选择为 ${protocol.name}`);
-    });
-    grid.append(card);
-  });
 }
 
 function selectedClients() {
@@ -184,46 +178,18 @@ function syncClientSelectAll() {
   el("selectAllClients").checked = boxes.every((box) => box.checked);
 }
 
-function syncDeployIdentity() {
-  state.deployIdentity = document.querySelector("input[name='deployIdentity']:checked").value;
-  const useTemporary = state.deployIdentity === "temporary";
-  el("temporaryAccountPanel").classList.toggle("muted-panel", !useTemporary);
-  el("tempUser").disabled = !useTemporary;
-  el("tempPassword").disabled = !useTemporary;
-  el("confirmTempCleanup").disabled = !useTemporary;
-
-  if (!useTemporary) {
-    el("confirmTempCleanup").checked = true;
-  }
-
-  const selectedCard = document.querySelector("input[name='deployIdentity']:checked").closest(".choice-card");
-  document.querySelectorAll("input[name='deployIdentity']").forEach((input) => {
-    input.closest(".choice-card").classList.remove("selected");
-  });
-  selectedCard.classList.add("selected");
-
-  updateGenerateState();
-  resetDeployFlow(false);
-}
-
 function deploySteps() {
-  const common = [
-    { id: "verify-deploy-user", title: "验证部署账号权限", hint: "确认当前部署账号可以执行 sudo。" },
+  return [
+    { id: "verify-deploy-user", title: "验证长期管理员权限", hint: "确认当前长期管理员账号可以执行 sudo。" },
     { id: "system-check", title: "检查系统环境", hint: "检查系统版本、CPU 架构和基础包管理器。" },
     { id: "install-dependencies", title: "安装必要依赖", hint: "安装 curl、unzip、tar、ca-certificates、ufw 等组件。" },
+    { id: "enable-bbr-soft", title: "检测并开启 BBR", hint: "尝试启用 BBR；如果系统不支持，会在结束后告诉你原因。" },
     { id: "configure-firewall", title: "配置防火墙", hint: "只开放 SSH 端口和代理服务端口，不关闭防火墙。" },
-    { id: "install-proxy-service", title: `部署 ${protocols[state.protocol].name}`, hint: "按已选择的协议安装并配置服务端。" },
-    { id: "verify-service", title: "测试服务状态", hint: "确认代理服务已启动，服务端口可监听。" }
+    { id: "install-proxy-service", title: `部署 ${protocols[state.protocol].name}`, hint: "按固定安全协议安装并配置服务端。" },
+    { id: "verify-service", title: "测试服务状态", hint: "确认代理服务已启动，服务端口可监听。" },
+    { id: "claude-test", title: "检测 Claude 连通性", hint: "自动检测出口、DNS、IPv6 与 Claude 相关域名是否可连通。" },
+    { id: "autofix-all", title: "自动自愈修复", hint: "检测到异常时自动尝试修复，并在结束后告诉你仍未完成的部分。" }
   ];
-
-  if (state.deployIdentity === "temporary") {
-    return [
-      { id: "create-temporary", title: "创建临时部署账号", hint: "使用长期管理员账号创建 appdeploy 并授予 sudo。" },
-      ...common
-    ];
-  }
-
-  return common;
 }
 
 function renderDeploySteps() {
@@ -231,10 +197,21 @@ function renderDeploySteps() {
   list.innerHTML = "";
   deploySteps().forEach((step, index) => {
     const item = document.createElement("li");
-    if (index < state.deploymentStepIndex) item.className = "done";
-    if (index === state.deploymentStepIndex && state.deploymentRunning) item.className = "running";
-    if (index === state.deploymentStepIndex && !state.deploymentRunning && !state.deploymentCompleted) item.className = "active";
-    item.textContent = step.title;
+    const result = state.stepResults[step.id];
+    if (result?.status === "success") item.className = "done";
+    else if (result?.status === "warning") item.className = "warning";
+    else if (result?.status === "failed") item.className = "failed";
+    else if (index === state.deploymentStepIndex && state.deploymentRunning) item.className = "running";
+    else if (index === state.deploymentStepIndex && !state.deploymentRunning && !state.deploymentCompleted) item.className = "active";
+
+    const icon = result?.status === "success"
+      ? "✅"
+      : result?.status === "warning"
+        ? "⚠️"
+        : result?.status === "failed"
+          ? "❌"
+          : "";
+    item.textContent = icon ? `${icon} ${step.title}` : step.title;
     list.append(item);
   });
 }
@@ -243,12 +220,13 @@ function resetDeployFlow(shouldLog = true) {
   state.deploymentStepIndex = 0;
   state.deploymentCompleted = false;
   state.deploymentRunning = false;
-  el("deployRunStatus").classList.remove("success", "danger");
+  state.stepResults = {};
+  state.deploymentOutcome = "idle";
+  el("deployRunStatus").classList.remove("success", "danger", "warning");
   el("deployRunStatus").classList.add("pending");
   el("deployRunStatus").textContent = "未开始";
   el("deployCurrentTitle").textContent = "等待开始";
-  el("deployCurrentHint").textContent = "完成 SSH 验证和部署前确认后，点击开始部署。";
-  el("deployResult").textContent = "暂无执行结果。";
+  el("deployCurrentHint").textContent = "完成 SSH 验证后，点击开始部署。";
   renderDeploySteps();
   updateGenerateState();
   if (shouldLog) log("部署执行向导已重置。");
@@ -256,9 +234,7 @@ function resetDeployFlow(shouldLog = true) {
 
 function deployPrerequisitesReady() {
   const v = values();
-  const checks = els(".precheck").every((box) => box.checked);
-  const identityReady = state.deployIdentity === "admin" || Boolean(v.tempUser && el("tempPassword").value);
-  return Boolean(state.mode && state.adminVerified && v.ip && v.sshPort && identityReady && checks);
+  return Boolean(state.adminVerified && v.ip && v.sshPort);
 }
 
 function updateDeployRunnerState() {
@@ -274,23 +250,43 @@ function updateDeployRunnerState() {
   renderDeploySteps();
 }
 
+function showResultModal(title, text) {
+  el("resultModalTitle").textContent = title;
+  el("resultModalBody").value = display(text || "没有可显示的内容。");
+  el("resultModal").classList.remove("hidden");
+}
+
+function hideResultModal() {
+  el("resultModal").classList.add("hidden");
+}
+
+function classifyStepResult(stepId, stdout) {
+  if (stepId === "enable-bbr-soft") {
+    return /未确认开启|未开启/.test(state.bbrSummary) ? "warning" : "success";
+  }
+  if (stepId === "claude-test") {
+    return /存在连接异常/.test(state.claudeSummary) ? "warning" : "success";
+  }
+  if (stepId === "autofix-all") {
+    return /部分修复|遗留告警|修复失败/.test(state.autofixSummary) ? "warning" : "success";
+  }
+  return stdout && /failed|error|未监听|未开放/i.test(stdout) ? "warning" : "success";
+}
+
+function incompleteStepMessages() {
+  return deploySteps()
+    .map((step) => ({ step, result: state.stepResults[step.id] }))
+    .filter(({ result }) => result && result.status !== "success")
+    .map(({ step, result }) => `${result.status === "failed" ? "❌" : "⚠️"} ${step.title}\n${result.reason || "需要进一步检查。"}`);
+}
+
 function deployCredentialsFor(stepId) {
   const v = values();
   const adminPassword = el("adminPassword").value;
-  const tempPassword = el("tempPassword").value;
-
-  if (stepId === "create-temporary" || state.deployIdentity === "admin") {
-    return {
-      username: v.adminUser,
-      password: adminPassword,
-      sudoPassword: adminPassword
-    };
-  }
-
   return {
-    username: v.tempUser,
-    password: tempPassword,
-    sudoPassword: tempPassword
+    username: v.adminUser,
+    password: adminPassword,
+    sudoPassword: adminPassword
   };
 }
 
@@ -308,11 +304,11 @@ async function runSingleDeployStep(step, steps) {
     username: creds.username,
     password: creds.password,
     sudoPassword: creds.sudoPassword,
-    tempUser: v.tempUser,
-    tempPassword: el("tempPassword").value
+    serverName: v.serverName,
+    force: false
   };
 
-  if (step.id === "install-proxy-service") {
+  if (step.id === "install-proxy-service" || step.id === "autofix-all") {
     const secrets = await ensureSecrets();
     payload.serverConfigJson = JSON.stringify(xrayServerConfig(v, secrets), null, 2);
   }
@@ -322,29 +318,72 @@ async function runSingleDeployStep(step, steps) {
   el("deployRunStatus").textContent = "执行中";
   el("deployCurrentTitle").textContent = step.title;
   el("deployCurrentHint").textContent = step.hint || "正在安装或配置，请等待。不要关闭应用。";
-  el("deployResult").textContent = "正在执行，请等待...";
   updateDeployRunnerState();
 
   const result = await window.vpsDesktop.runDeploymentAction(payload);
 
   if (!result.ok) {
+    state.stepResults[step.id] = {
+      status: "failed",
+      reason: result.error || result.stderr || "当前步骤执行失败。"
+    };
+    state.deploymentOutcome = "failed";
     el("deployRunStatus").classList.remove("pending");
     el("deployRunStatus").classList.add("danger");
-    el("deployRunStatus").textContent = "失败";
-    el("deployResult").textContent = display(result.error || result.stderr || "当前步骤执行失败。");
+    el("deployRunStatus").textContent = "❌ 未完成";
+    showResultModal(`未完成：${step.title}`, state.stepResults[step.id].reason);
     log(`${step.title} 执行失败：${result.error || "未知错误"}。`);
+    renderDeploySteps();
     return false;
+  }
+
+  if (step.id === "enable-bbr-soft") {
+    state.bbrRaw = result.stdout || "";
+    state.bbrSummary = bbrSummaryText(result.stdout || "");
+  }
+
+  if (step.id === "claude-test") {
+    state.claudeRaw = result.stdout || "";
+    state.claudeSummary = claudeSummaryText(result.stdout || "");
+  }
+
+  if (step.id === "autofix-all") {
+    state.autofixRaw = result.stdout || "";
+    state.autofixSummary = autofixSummaryText(result.stdout || "");
+  }
+
+  const stepSummary = deploymentStepSummary(step.id, result.stdout || "") || "当前步骤已完成。";
+  const stepStatus = classifyStepResult(step.id, result.stdout || "");
+  state.stepResults[step.id] = {
+    status: stepStatus,
+    reason: stepSummary
+  };
+  if (stepStatus === "warning" && state.deploymentOutcome !== "failed") {
+    state.deploymentOutcome = "warning";
   }
 
   state.deploymentStepIndex += 1;
   if (state.deploymentStepIndex >= steps.length) {
     state.deploymentCompleted = true;
-    el("deployRunStatus").classList.remove("pending", "danger");
-    el("deployRunStatus").classList.add("success");
-    el("deployRunStatus").textContent = "已完成";
-    el("deployResult").textContent = display(`${result.stdout || "服务端部署已完成。"}\n\n现在可以在下一步生成客户端配置和订阅链接。`);
-  } else {
-    el("deployResult").textContent = display(result.stdout || "当前步骤已完成。");
+    el("deployRunStatus").classList.remove("pending", "danger", "success", "warning");
+    const incomplete = incompleteStepMessages();
+    if (state.deploymentOutcome === "failed") {
+      el("deployRunStatus").classList.add("danger");
+      el("deployRunStatus").textContent = "❌ 未完成";
+    } else if (incomplete.length) {
+      state.deploymentOutcome = "warning";
+      el("deployRunStatus").classList.add("warning");
+      el("deployRunStatus").textContent = "⚠️ 部署完成但未跑通";
+      showResultModal("部署完成但仍有未跑通部分", incomplete.join("\n\n"));
+    } else {
+      state.deploymentOutcome = "success";
+      el("deployRunStatus").classList.add("success");
+      el("deployRunStatus").textContent = "✅ 已完成";
+    }
+    el("deployCurrentTitle").textContent = "部署结果";
+    el("deployCurrentHint").textContent = state.deploymentOutcome === "success"
+      ? "所有部署步骤都已完成，现在可以生成客户端配置与订阅链接。"
+      : "部署流程已结束，请根据弹窗提示处理未完成的部分。";
   }
   log(`${step.title} 已完成。`);
   updateDeployRunnerState();
@@ -354,13 +393,13 @@ async function runSingleDeployStep(step, steps) {
 async function runDeployStep() {
   const desktopApi = window.vpsDesktop;
   if (!desktopApi?.runDeploymentAction) {
-    el("deployResult").textContent = "当前是 Web 预览版，不能直接执行远程部署。请使用桌面版。";
+    showResultModal("无法开始自动部署", "当前是 Web 预览版，不能直接执行远程部署。请使用桌面版。");
     log("当前环境不支持远程部署执行，请使用 Electron 桌面版。");
     return;
   }
 
   if (!deployPrerequisitesReady()) {
-    el("deployResult").textContent = "请先完成 SSH 验证、部署身份选择和部署前确认。";
+    showResultModal("还不能开始部署", "请先完成 SSH 验证。");
     return;
   }
 
@@ -379,8 +418,8 @@ async function runDeployStep() {
   } catch (error) {
     el("deployRunStatus").classList.remove("pending");
     el("deployRunStatus").classList.add("danger");
-    el("deployRunStatus").textContent = "失败";
-    el("deployResult").textContent = display(error.message || "当前步骤执行失败。");
+    el("deployRunStatus").textContent = "❌ 未完成";
+    showResultModal("自动部署失败", error.message || "当前步骤执行失败。");
     log(`自动部署执行失败：${error.message || "未知错误"}。`);
   } finally {
     state.deploymentRunning = false;
@@ -437,12 +476,6 @@ async function testAdminSsh() {
     }
 
     if (result.ok) {
-      el("confirmAdminCreated").checked = true;
-      el("confirmAdminSsh").checked = true;
-      el("confirmAdminSudo").checked = true;
-      if (state.deployIdentity === "admin") {
-        el("confirmTempCleanup").checked = true;
-      }
       setAdminVerification("success", `SSH 登录成功，sudo whoami 输出 root。Host key: ${result.hostFingerprint || "未返回"}`);
       log(`长期管理员账号验证通过：SSH 可连接，sudo 输出 ${result.sudoUser || "root"}。`);
     } else {
@@ -462,29 +495,15 @@ async function testAdminSsh() {
 function deploymentScript(v, secrets) {
   const protocolName = protocols[state.protocol].name;
   const xrayConfig = JSON.stringify(xrayServerConfig(v, secrets), null, 2);
-  const useTemporary = state.deployIdentity === "temporary";
-  const deployUser = useTemporary ? v.tempUser : v.adminUser;
-  const cleanupStep = useTemporary
-    ? `echo "[8/8] 删除临时部署账号"
-if command -v deluser >/dev/null 2>&1; then
-  sudo deluser --remove-home "\${TEMP_USER}" || true
-else
-  sudo userdel -r "\${TEMP_USER}" || true
-fi
-
-echo "部署完成。临时部署账号 ${v.tempUser} 已删除。以后请使用你的长期管理员账号 ${v.adminUser} 管理 VPS。"`
-    : `echo "[8/8] 跳过临时账号删除"
-echo "部署完成。本次选择直接使用长期管理员账号 ${v.adminUser} 部署，没有创建或删除临时账号。"`;
 
   return `#!/usr/bin/env bash
 set -Eeuo pipefail
 
-TEMP_USER="${v.tempUser}"
-DEPLOY_USER="${deployUser}"
+DEPLOY_USER="${v.adminUser}"
 SSH_PORT="${v.sshPort}"
 SERVICE_PORT="${v.servicePort}"
 PROTOCOL="${protocolName}"
-DEPLOY_IDENTITY="${useTemporary ? "temporary" : "admin"}"
+DEPLOY_IDENTITY="admin"
 
 echo "[1/8] 检查系统版本、CPU 架构、网络和端口"
 uname -a
@@ -519,7 +538,8 @@ sudo ss -tulpen | grep ":\${SERVICE_PORT}" || (echo "服务端口未监听" >&2;
 echo "[7/8] 确认 SSH 端口仍开放"
 sudo ufw status | grep "\${SSH_PORT}/tcp" || (echo "SSH 端口未开放，停止删除临时账号" >&2; exit 1)
 
-${cleanupStep}
+echo "[8/8] 完成部署"
+echo "部署完成。以后请继续使用长期管理员账号 ${v.adminUser} 管理 VPS。"
 `;
 }
 
@@ -666,9 +686,8 @@ FINAL,Secure
 }
 
 function report(v) {
-  const aiState = state.mode === "ai" ? "已启用，受限为本地脱敏和预设建议" : "未启用";
   const clients = clientSelectionText();
-  const useTemporary = state.deployIdentity === "temporary";
+  const claudeRules = claudeProxyRules();
   return `本地安全检查报告
 
 服务状态: 部署脚本包含 systemctl enable/restart/status xray 检查
@@ -677,16 +696,152 @@ function report(v) {
 协议类型: ${protocols[state.protocol].name}
 客户端配置生成状态: ${clients} 已在本地生成
 长期管理员验证状态: ${state.adminVerified ? "已通过 SSH 登录和 sudo 测试" : "未通过"}
-部署身份策略: ${useTemporary ? `创建临时部署账号 ${v.tempUser} 并切换部署` : `直接使用长期管理员账号 ${v.adminUser} 部署`}
-临时账号删除状态: ${useTemporary ? `脚本末尾执行 deluser --remove-home ${v.tempUser}，无 deluser 时回退 userdel -r` : "未使用临时账号，跳过删除"}
-AI 辅助状态: ${aiState}
+部署身份策略: 直接使用长期管理员账号 ${v.adminUser} 部署
+AI 辅助状态: 未启用
 Host key 指纹: ${v.hostFingerprint || "用户尚未填写"}
+BBR 状态: ${state.bbrSummary || "未在部署步骤中检测"}
+Claude 连通性: ${state.claudeSummary || "未在部署步骤中检测"}
+Auto-Fix 状态: ${state.autofixSummary || "未执行自动修复"}
+Auto-Fix 报告: /root/vps-helper-autofix-report.md 与 ~/Obsidian/VPS/VPS 配置.md
 隐私状态: 不收集、不上传、不保存 VPS IP、SSH 密码、私钥、节点配置或订阅链接
 日志脱敏: 已隐藏 IP、密码、UUID、私钥、订阅链接和可识别域名
 
+Claude 分流规则建议:
+${claudeRules}
+
 完成提示:
-${useTemporary ? `部署完成。临时部署账号 ${v.tempUser} 已删除。以后请使用你的长期管理员账号 ${v.adminUser} 管理 VPS。` : `部署完成。本次直接使用长期管理员账号 ${v.adminUser} 部署。`}
+部署完成。请继续使用长期管理员账号 ${v.adminUser} 管理 VPS。
 `;
+}
+
+function claudeProxyRules() {
+  const domains = [
+    "claude.ai",
+    "anthropic.com",
+    "statsigapi.net",
+    "intercom.io",
+    "intercomcdn.com",
+    "statsig.com",
+    "sentry.io"
+  ];
+  const rules = domains.map((domain) => `DOMAIN-SUFFIX,${domain},PROXY`).join("\n");
+  return `Clash / Mihomo:
+ipv6: false
+rules:
+${domains.map((domain) => `  - DOMAIN-SUFFIX,${domain},PROXY`).join("\n")}
+
+Surge / Shadowrocket:
+${rules}`;
+}
+
+function textSection(text, begin, end) {
+  const match = String(text).match(new RegExp(`${begin}\\n([\\s\\S]*?)\\n${end}`));
+  return match ? match[1].trim() : "";
+}
+
+function jsonSection(text, begin, end) {
+  try {
+    return JSON.parse(textSection(text, begin, end));
+  } catch (_error) {
+    return {};
+  }
+}
+
+function traceFields(raw) {
+  return Object.fromEntries(
+    String(raw)
+      .split(/\r?\n/)
+      .map((line) => line.split("="))
+      .filter((parts) => parts.length >= 2)
+      .map(([key, ...value]) => [key, value.join("=")])
+  );
+}
+
+function claudeDomainRows(raw) {
+  return Array.from(String(raw).matchAll(/DOMAIN_BEGIN ([^\n]+)\n([\s\S]*?)DOMAIN_END \1/g)).map((match) => {
+    const domain = match[1];
+    const body = match[2];
+    const pick = (key) => body.match(new RegExp(`^${key} (.*)$`, "m"))?.[1]?.trim() || "未返回";
+    const curl = pick("CURL");
+    const status = curl.split("|")[0] || "未返回";
+    const curlHint = /reset/i.test(curl) ? "connection reset" : /timed? out|timeout/i.test(curl) ? "timeout" : pick("BLOCK_HINT");
+    return {
+      domain,
+      dns: [pick("DNS_V4"), pick("DNS_V6")].filter((value) => value && value !== "未返回").join(" / ") || "失败",
+      tcp: pick("TCP443"),
+      tls: pick("TLS"),
+      http2: pick("HTTP2"),
+      status,
+      hint: curlHint === "none" ? "无明显拦截词" : curlHint
+    };
+  });
+}
+
+function dnsRegionRows(raw) {
+  return Array.from(String(raw).matchAll(/DNS_IPINFO_BEGIN ([^\n]+)\n([\s\S]*?)\nDNS_IPINFO_END \1/g)).map((match) => {
+    try {
+      const info = JSON.parse(match[2]);
+      return `${match[1]} ${info.country || "未知"} ${info.org || info.asn || "未知 ASN"}`;
+    } catch (_error) {
+      return `${match[1]} 地区未知`;
+    }
+  });
+}
+
+function claudeRiskJudgement(v4, v6, dnsRows, rows) {
+  const failedClaude = rows.filter((row) => row.tcp !== "ok" || row.tls !== "ok" || /^000$/.test(row.status));
+  const blockedHint = rows.some((row) => /blocked|unsupported|forbidden|denied/i.test(row.hint));
+  const dnsMismatch = dnsRows.some((row) => v4.country && !row.includes(` ${v4.country} `));
+  const chinaDns = dnsRows.some((row) => /\bCN\b|China/i.test(row));
+  const ideas = [];
+
+  if (v6.ip) ideas.push("IPv6 出口可用；若客户端 IPv6 未进入代理，存在 IPv6 泄露可能。");
+  if (chinaDns || dnsMismatch) ideas.push("DNS resolver 地区与出口观察不一致，先排查 DNS 是否随代理转发。");
+  if (blockedHint) ideas.push("返回内容出现 blocked/unsupported/forbidden 类提示，可能是 Anthropic 对地区、出口 IP 或 ASN 的限制。");
+  if (failedClaude.length) ideas.push("Claude 域名链路有 TCP/TLS/curl 失败，可能存在域名未全走代理、链路 reset 或 TLS/HTTP2 指纹异常。");
+  if (!ideas.length) ideas.push("VPS 侧基础链路未见明显阻断；若 ChatGPT 可用但 Claude 仍失败，优先怀疑 Anthropic 对当前家宽出口 IP / ASN 风控。");
+  return ideas;
+}
+
+function claudeSummaryText(raw) {
+  const v4 = jsonSection(raw, "IPV4_INFO_BEGIN", "IPV4_INFO_END");
+  const v6 = jsonSection(raw, "IPV6_INFO_BEGIN", "IPV6_INFO_END");
+  const dnsRows = dnsRegionRows(raw);
+  const rows = claudeDomainRows(raw);
+  const judgement = claudeRiskJudgement(v4, v6, dnsRows, rows);
+  const okCount = rows.filter((row) => row.tcp === "ok" && row.tls === "ok" && !/^000$/.test(row.status)).length;
+  const headline = rows.length && okCount === rows.length ? "可以成功连接，链路基础测试通过。" : "存在连接异常，需要继续排查。";
+  return `${headline} 出口 ${v4.country || "未知地区"} ${v4.org || "未知 ASN"}。${v6.ip ? " 检测到 IPv6 出口，存在泄露风险。" : ""} 原因推测：${judgement.join("；")}`;
+}
+
+function bbrSummaryText(raw) {
+  const qdisc = String(raw).match(/^QDISC (.*)$/m)?.[1] || "未返回";
+  const congestion = String(raw).match(/^CONGESTION (.*)$/m)?.[1] || "未返回";
+  const enabled = /default_qdisc\s*=\s*fq/.test(qdisc) && /tcp_congestion_control\s*=\s*bbr/.test(congestion);
+  return enabled
+    ? "已开启，拥塞控制算法为 bbr，default_qdisc 为 fq。"
+    : `未确认开启。当前 qdisc: ${qdisc}；当前拥塞控制: ${congestion}。可能原因：内核版本过低、系统不支持 BBR、权限不足或 sysctl 未生效。`;
+}
+
+function extractAutofixReport(raw) {
+  return textSection(raw, "AUTOFIX_REPORT_BEGIN", "AUTOFIX_REPORT_END");
+}
+
+function extractAutofixLines(raw, prefix) {
+  return Array.from(String(raw).matchAll(new RegExp(`^${prefix} (.*)$`, "gm"))).map((match) => match[1].trim());
+}
+
+function autofixSummaryText(raw) {
+  const status = String(raw).match(/^AUTOFIX_STATUS (.*)$/m)?.[1]?.trim() || "unknown";
+  const target = String(raw).match(/^AUTOFIX_TARGET (.*)$/m)?.[1]?.trim() || "all";
+  const issues = extractAutofixLines(raw, "AUTOFIX_ISSUE");
+  const actions = extractAutofixLines(raw, "AUTOFIX_ACTION");
+  const remaining = extractAutofixLines(raw, "AUTOFIX_REMAINING");
+  const statusText = status === "success" ? "修复完成" : status === "partial" ? "部分修复完成" : "修复失败";
+  const issueText = issues.length ? `发现 ${issues.length} 项异常` : "未发现明显异常";
+  const actionText = actions.length ? `已执行 ${actions.length} 个修复动作` : "未执行配置修改";
+  const remainingText = remaining.length ? `仍需关注：${remaining.join("；")}` : "当前没有遗留告警";
+  return `目标 ${target}：${statusText}，${issueText}，${actionText}。${remainingText}`;
 }
 
 function renderOutput() {
@@ -697,6 +852,7 @@ function renderOutput() {
     mihomo: "Mihomo/Clash Meta 配置",
     surge: "Surge / Stash 配置",
     links: "Shadowrocket / v2rayN 链接",
+    autofix: "Auto-Fix 自愈报告",
     report: "安全报告"
   };
   el("outputTitle").textContent = titles[state.currentTab];
@@ -704,15 +860,98 @@ function renderOutput() {
   el("copyOutput").disabled = !state.outputs[state.currentTab];
 }
 
-async function generateAll() {
+function deploymentStepSummary(stepId, stdout) {
+  if (stepId === "enable-bbr-soft") {
+    return `BBR 检测结果：${state.bbrSummary || "已执行，等待总结。"}`;
+  }
+  if (stepId === "claude-test") {
+    return `Claude 连通性结果：${state.claudeSummary || "已执行，等待总结。"}`;
+  }
+  if (stepId === "autofix-all") {
+    return `Auto-Fix 结果：${state.autofixSummary || "已执行，等待总结。"}`;
+  }
+  return stdout;
+}
+
+async function runAutofix() {
+  const desktopApi = window.vpsDesktop;
+  if (!desktopApi?.runDeploymentAction) {
+    showResultModal("无法执行 Auto-Fix", "当前是 Web 预览版，不能直接执行 Auto-Fix。请使用桌面版。");
+    return;
+  }
+
+  if (!deployPrerequisitesReady()) {
+    showResultModal("还不能执行 Auto-Fix", "请先完成 SSH 验证。");
+    return;
+  }
+
+  const v = values();
+  const target = el("autofixTarget").value;
+  const force = el("autofixForce").checked;
+  const button = el("runAutofix");
+  const creds = deployCredentialsFor("verify-deploy-user");
+  const payload = {
+    action: `autofix-${target}`,
+    host: v.ip,
+    port: v.sshPort,
+    sshPort: v.sshPort,
+    servicePort: v.servicePort,
+    protocolKey: state.protocol,
+    protocolName: protocols[state.protocol].name,
+    username: creds.username,
+    password: creds.password,
+    sudoPassword: creds.sudoPassword,
+    serverName: v.serverName,
+    force
+  };
+
+  const secrets = await ensureSecrets();
+  payload.serverConfigJson = JSON.stringify(xrayServerConfig(v, secrets), null, 2);
+
+  button.disabled = true;
+  el("autofixStatus").classList.remove("success", "danger");
+  el("autofixStatus").classList.add("pending");
+  el("autofixStatus").textContent = "修复中";
+  el("autofixResult").textContent = "正在检测、备份、修复并复测，请等待...";
+
   try {
-    const v = values();
-    const tempPassword = el("tempPassword").value;
-    if (state.deployIdentity === "temporary" && !tempPassword) {
-      log("临时密码为空。请填写临时部署账号密码后再生成部署内容。");
+    const result = await desktopApi.runDeploymentAction(payload);
+    if (!result.ok) {
+      el("autofixStatus").classList.remove("pending", "success");
+      el("autofixStatus").classList.add("danger");
+      el("autofixStatus").textContent = "失败";
+      el("autofixResult").textContent = "自动修复未完成，请查看弹窗。";
+      showResultModal("Auto-Fix 未完成", result.error || result.stderr || "Auto-Fix 执行失败。");
+      log(`Auto-Fix 执行失败：${result.error || "未知错误"}。`);
       return;
     }
 
+    state.autofixRaw = result.stdout || "";
+    state.autofixSummary = autofixSummaryText(result.stdout || "");
+    state.outputs.autofix = extractAutofixReport(result.stdout || "");
+    el("autofixStatus").classList.remove("pending", "danger", "warning");
+    el("autofixStatus").classList.add(/部分修复|遗留告警/.test(state.autofixSummary) ? "warning" : "success");
+    el("autofixStatus").textContent = /部分修复|遗留告警/.test(state.autofixSummary) ? "部分完成" : "已完成";
+    el("autofixResult").textContent = display(state.autofixSummary);
+    if (/部分修复|遗留告警/.test(state.autofixSummary)) {
+      showResultModal("Auto-Fix 仍有未完成项", extractAutofixReport(result.stdout || state.autofixSummary));
+    }
+    renderOutput();
+    log(`Auto-Fix 已执行：${state.autofixSummary}`);
+  } catch (error) {
+    el("autofixStatus").classList.remove("pending", "success", "warning");
+    el("autofixStatus").classList.add("danger");
+    el("autofixStatus").textContent = "失败";
+    el("autofixResult").textContent = display(error.message || "Auto-Fix 执行失败。");
+    log(`Auto-Fix 执行失败：${error.message || "未知错误"}。`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function generateAll() {
+  try {
+    const v = values();
     const secrets = await ensureSecrets();
 
     const selected = selectedClients();
@@ -722,10 +961,11 @@ async function generateAll() {
       mihomo: selected.includes("mihomo") ? mihomoConfig(v, secrets) : "未选择 Mihomo / Clash Meta。勾选后重新生成即可。",
       surge: selected.includes("surge") ? surgeConfig(v, secrets) : "未选择 Surge / Stash。勾选后重新生成即可。",
       links: selected.includes("links") ? linksConfig(v, secrets) : "未选择 Shadowrocket / v2rayN 链接。勾选后重新生成即可。",
+      autofix: state.autofixRaw ? extractAutofixReport(state.autofixRaw) : "尚未执行 Auto-Fix。部署中的自动自愈或手动自愈完成后，这里会显示完整修复报告。",
       report: report(v)
     };
 
-    setStep(4);
+    setStep(3);
     renderOutput();
     log(`已在本地生成 ${protocols[state.protocol].name} 部署脚本和客户端配置：${clientSelectionText()}。`);
     log("敏感字段默认在界面和日志中打码，复制按钮会复制当前完整内容。");
@@ -740,11 +980,22 @@ function clearSensitiveData() {
   state.outputs = {};
   state.adminVerified = false;
   state.adminVerification = null;
-  ["vpsIp", "adminPassword", "tempPassword", "hostFingerprint"].forEach((id) => {
+  ["vpsIp", "adminPassword", "hostFingerprint"].forEach((id) => {
     el(id).value = "";
   });
   setAdminVerification("pending", "敏感数据已清空，请重新测试长期管理员账号。");
   renderOutput();
+  state.claudeRaw = "";
+  state.claudeSummary = "";
+  state.bbrRaw = "";
+  state.bbrSummary = "";
+  state.autofixRaw = "";
+  state.autofixSummary = "";
+  el("autofixStatus").classList.remove("success", "danger");
+  el("autofixStatus").classList.add("pending");
+  el("autofixStatus").textContent = "未执行";
+  el("autofixResult").textContent = "部署后如果发现 Claude / DNS / IPv6 / BBR / Xray / 防火墙异常，可以在这里直接一键自愈修复。";
+  hideResultModal();
   log("已清空本页敏感数据和已生成配置。");
 }
 
@@ -753,53 +1004,6 @@ async function copyText(text) {
 }
 
 function bindEvents() {
-  els("input[name='deployMode']").forEach((input) => {
-    input.addEventListener("change", () => {
-      els(".choice-card").forEach((card) => card.classList.remove("selected"));
-      input.closest(".choice-card").classList.add("selected");
-    });
-  });
-
-  el("confirmMode").addEventListener("click", () => {
-    state.mode = document.querySelector("input[name='deployMode']:checked").value;
-    el("modeGate").classList.add("hidden");
-    el("appBody").classList.remove("hidden");
-    el("aiPanel").classList.toggle("hidden", state.mode !== "ai");
-    setStep(1);
-    log(state.mode === "ai" ? "已选择智能助手部署：仅允许本地脱敏内容进入 AI。" : "已选择标准部署：不启用 AI，不上传日志或配置。");
-    updateGenerateState();
-  });
-
-  el("backToMode").addEventListener("click", () => {
-    state.mode = null;
-    state.adminVerified = false;
-    el("appBody").classList.add("hidden");
-    el("modeGate").classList.remove("hidden");
-    el("aiPanel").classList.add("hidden");
-    setStep(0);
-    updateGenerateState();
-    log("已返回部署模式选择，表单内容保留在本地页面内存中。");
-  });
-
-  el("disableAi").addEventListener("click", () => {
-    state.mode = "standard";
-    el("aiPanel").classList.add("hidden");
-    log("用户已关闭 AI 辅助，切换回标准部署。");
-    renderOutput();
-  });
-
-  el("sanitizeAi").addEventListener("click", () => {
-    const sanitized = redact(el("aiInput").value);
-    el("aiOutput").textContent = sanitized || "没有可处理的内容。";
-    log("已生成本地脱敏内容。");
-  });
-
-  els(".precheck").forEach((box) => {
-    box.addEventListener("change", () => {
-      resetDeployFlow(false);
-      updateGenerateState();
-    });
-  });
   els(".client-target").forEach((box) => {
     box.addEventListener("change", () => {
       syncClientSelectAll();
@@ -816,13 +1020,6 @@ function bindEvents() {
     log(`客户端配置选择已更新：${clientSelectionText()}。`);
   });
 
-  els("input[name='deployIdentity']").forEach((input) => {
-    input.addEventListener("change", () => {
-      syncDeployIdentity();
-      log(state.deployIdentity === "temporary" ? "部署身份选择为：创建临时账号并切换部署。" : "部署身份选择为：直接使用长期管理员账号部署。");
-    });
-  });
-
   ["vpsIp", "sshPort", "adminUser", "adminPassword"].forEach((id) => {
     el(id).addEventListener("input", () => {
       resetAdminVerification();
@@ -830,7 +1027,7 @@ function bindEvents() {
     });
   });
 
-  ["tempUser", "servicePort", "serverName", "hostFingerprint"].forEach((id) => {
+  ["servicePort", "serverName", "hostFingerprint"].forEach((id) => {
     el(id).addEventListener("input", () => {
       if (["servicePort", "serverName"].includes(id)) {
         state.secrets = null;
@@ -840,13 +1037,9 @@ function bindEvents() {
     });
   });
 
-  el("tempPassword").addEventListener("input", () => {
-    resetDeployFlow(false);
-    updateGenerateState();
-  });
-
   el("testAdminSsh").addEventListener("click", testAdminSsh);
   el("runDeployStep").addEventListener("click", runDeployStep);
+  el("runAutofix").addEventListener("click", runAutofix);
   el("resetDeployFlow").addEventListener("click", () => resetDeployFlow(true));
   el("generateAll").addEventListener("click", generateAll);
   el("clearSecrets").addEventListener("click", clearSensitiveData);
@@ -880,9 +1073,16 @@ function bindEvents() {
     await copyText(content);
     log(`已复制 ${el("outputTitle").textContent} 的完整内容。`);
   });
+
+  el("closeResultModal").addEventListener("click", hideResultModal);
+  el("copyResultModal").addEventListener("click", async () => {
+    await copyText(el("resultModalBody").value);
+    log("已复制部署结果提示。");
+  });
+  el("resultModal").addEventListener("click", (event) => {
+    if (event.target === el("resultModal")) hideResultModal();
+  });
 }
 
-setupProtocols();
 bindEvents();
-syncDeployIdentity();
-log("应用已在本地启动。请选择标准部署或智能助手部署。");
+log("应用已在本地启动。当前仅提供标准部署模式和固定安全协议。");

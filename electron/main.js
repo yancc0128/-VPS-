@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const crypto = require("node:crypto");
 const path = require("node:path");
 const { Client } = require("ssh2");
+const { helperActionScript } = require("../scripts/remote-actions.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
@@ -229,6 +230,7 @@ ss -tulpen | grep ":${servicePort}"
 echo "服务状态检查完成。"
 `;
     default:
+      if (helperActionScript(action, payload)) return helperActionScript(action, payload);
       throw new Error("未知部署动作。");
   }
 }

@@ -4,6 +4,9 @@
   "private": true,
   "description": "Privacy-first local VPS security deployment assistant.",
   "main": "electron/main.js",
+  "bin": {
+    "vps-helper": "scripts/vps-helper.mjs"
+  },
   "scripts": {
     "dev": "npm run dev:web",
     "dev:web": "python3 -m http.server 5173",
@@ -15,6 +18,7 @@
     "dist:win": "npm run build:web && electron-builder --win portable --x64",
     "dist:mac": "npm run build:web && electron-builder --mac dmg zip --arm64",
     "check": "node --check app.js",
+    "vps-helper": "node scripts/vps-helper.mjs",
     "serve:android-preview": "python3 -m http.server 5173",
     "serve:windows-preview": "python3 -m http.server 5173"
   },
@@ -29,6 +33,8 @@
       "electron/**/*",
       "assets/icon.png",
       "dist/web/**/*",
+      "scripts/remote-actions.cjs",
+      "scripts/vps-helper.mjs",
       "node_modules/ssh2/**/*",
       "node_modules/asn1/**/*",
       "node_modules/bcrypt-pbkdf/**/*",

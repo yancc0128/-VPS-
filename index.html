@@ -18,42 +18,18 @@
     <main class="layout">
       <aside class="sidebar" aria-label="部署步骤">
         <ol class="steps">
-          <li class="active">选择模式</li>
-          <li>SSH 验证</li>
-          <li>临时部署账号</li>
-          <li>部署前确认</li>
-          <li>生成脚本与配置</li>
+          <li class="active">SSH 验证</li>
+          <li>安全协议</li>
+          <li>自动部署</li>
+          <li>客户端配置</li>
           <li>安全报告</li>
         </ol>
       </aside>
 
       <section class="workspace">
-        <section class="panel mode-gate" id="modeGate">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">部署开始前必须选择</p>
-              <h2>部署模式</h2>
-            </div>
-          </div>
-          <div class="mode-grid">
-            <label class="choice-card selected" for="modeStandard">
-              <input type="radio" id="modeStandard" name="deployMode" value="standard" checked />
-              <span class="choice-title">标准部署</span>
-              <span class="choice-copy">不启用 AI，不上传日志、配置或错误信息，按固定安全流程执行。</span>
-            </label>
-            <label class="choice-card" for="modeAi">
-              <input type="radio" id="modeAi" name="deployMode" value="ai" />
-              <span class="choice-title">智能助手部署</span>
-              <span class="choice-copy">仅允许分析本地脱敏内容，提供解释、协议建议和预设安全动作。</span>
-            </label>
-          </div>
-          <button class="primary" id="confirmMode">确认模式并继续</button>
-        </section>
-
-        <div id="appBody" class="hidden">
+        <div id="appBody">
           <section class="flow-control" aria-label="流程控制">
-            <button class="ghost" id="backToMode" type="button">返回选择部署模式</button>
-            <span>误点确认也可以返回修改，已填写内容仍只保留在本机页面内存中。</span>
+            <span>当前仅保留标准部署模式。所有部署动作按固定安全流程执行，不上传日志、配置或错误信息。</span>
           </section>
 
           <section class="panel">
@@ -114,74 +90,15 @@ sudo whoami</code></pre>
             <div class="section-head">
               <div>
                 <p class="eyebrow">第 2 步</p>
-                <h2>选择部署身份</h2>
-              </div>
-            </div>
-            <p class="muted">推荐创建 App 专用临时部署账号并切换过去部署；如果你更重视简单流程，也可以继续使用已验证的长期管理员账号。</p>
-            <div class="mode-grid">
-              <label class="choice-card selected" for="deployWithTemp">
-                <input type="radio" id="deployWithTemp" name="deployIdentity" value="temporary" checked />
-                <span class="choice-title">创建临时账号并切换部署</span>
-                <span class="choice-copy">推荐。部署完成后删除临时账号，长期管理员账号只用于维护。</span>
-              </label>
-              <label class="choice-card" for="deployWithAdmin">
-                <input type="radio" id="deployWithAdmin" name="deployIdentity" value="admin" />
-                <span class="choice-title">直接使用长期管理员部署</span>
-                <span class="choice-copy">流程更简单，但长期管理员账号会贯穿部署过程。</span>
-              </label>
-            </div>
-            <div class="manual-fallback collapsed">
-              <pre id="tempCommands"><code>sudo adduser appdeploy
-sudo usermod -aG sudo appdeploy</code></pre>
-            </div>
-          </section>
-
-          <section class="panel" id="temporaryAccountPanel">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">第 3 步</p>
-                <h2>临时账号连接信息</h2>
-              </div>
-              <span class="status-dot" id="privacyStatus">不保存到磁盘</span>
-            </div>
-            <div class="form-grid">
-              <label>
-                <span>临时用户名</span>
-                <input id="tempUser" autocomplete="off" value="appdeploy" />
-              </label>
-              <label>
-                <span>临时密码</span>
-                <input id="tempPassword" type="password" autocomplete="new-password" placeholder="仅保存在当前页面内存中" />
-              </label>
-            </div>
-            <p class="hint">首次连接时请核对 host key 指纹。密码不会进入日志、报告、配置文件或导出内容。</p>
-          </section>
-
-          <section class="panel">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">第 4 步</p>
-                <h2>部署前确认</h2>
-              </div>
-            </div>
-            <div class="checklist">
-              <label><input type="checkbox" class="precheck" id="confirmAdminCreated" /> 我已经创建或确认长期管理员账号。</label>
-              <label><input type="checkbox" class="precheck" id="confirmAdminSsh" /> 我已经测试长期账号可以 SSH 登录。</label>
-              <label><input type="checkbox" class="precheck" id="confirmAdminSudo" /> 我已经测试长期账号可以执行 sudo。</label>
-              <label id="temporaryCleanupCheck"><input type="checkbox" class="precheck" id="confirmTempCleanup" /> 我理解 App 临时账号部署完成后会被删除。</label>
-            </div>
-          </section>
-
-          <section class="panel">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">第 5 步</p>
-                <h2>选择服务端协议</h2>
+                <h2>固定安全协议</h2>
               </div>
               <button class="ghost" id="revealToggle">显示敏感字段</button>
             </div>
-            <p class="muted">先选择要部署到 VPS 的服务端协议和端口。部署执行向导会按这里的选择安装和配置服务。</p>
-            <div class="protocol-grid" id="protocolGrid"></div>
+            <p class="muted">当前不提供协议选择，统一使用更安全、抗封锁且兼顾性能的固定方案：</p>
+            <div class="protocol-static">
+              <div class="protocol-title">Xray-core + VLESS + REALITY + XTLS Vision + uTLS</div>
+              <div class="protocol-copy">用于优先保证安全、抗识别、防封锁和稳定加速。客户端会按这一套协议生成配置。</div>
+            </div>
             <div class="form-grid">
               <label>
                 <span>代理服务端口</span>
@@ -197,18 +114,17 @@ sudo usermod -aG sudo appdeploy</code></pre>
           <section class="panel">
             <div class="section-head">
               <div>
-                <p class="eyebrow">第 6 步</p>
+                <p class="eyebrow">第 3 步</p>
                 <h2>部署执行向导</h2>
               </div>
               <span class="status-dot pending" id="deployRunStatus">未开始</span>
             </div>
-            <p class="muted">点击开始后，桌面版会按预设安全动作自动逐步部署。当前步骤会转圈，完成后自动打勾；失败时会停止并显示脱敏结果。</p>
+            <p class="muted">点击开始后，桌面版会按固定安全流程自动逐步部署。步骤执行中只显示进度；当某一步未完成时，会在结束后弹窗告诉你未完成项和原因，文字可直接复制。</p>
             <div class="runner">
               <ol id="deployStepList" class="runner-steps"></ol>
               <div class="runner-console">
                 <div class="runner-title" id="deployCurrentTitle">等待开始</div>
-                <p id="deployCurrentHint">完成 SSH 验证和部署前确认后，点击开始部署。</p>
-                <pre class="runner-result"><code id="deployResult">暂无执行结果。</code></pre>
+                <p id="deployCurrentHint">完成 SSH 验证后，点击开始部署。</p>
                 <div class="actions">
                   <button class="primary" id="runDeployStep" type="button" disabled>开始自动部署</button>
                   <button class="ghost" id="resetDeployFlow" type="button">重置部署流程</button>
@@ -220,7 +136,40 @@ sudo usermod -aG sudo appdeploy</code></pre>
           <section class="panel">
             <div class="section-head">
               <div>
-                <p class="eyebrow">第 7 步</p>
+                <p class="eyebrow">自愈修复</p>
+                <h2>Auto-Fix 自动修复</h2>
+              </div>
+              <span class="status-dot pending" id="autofixStatus">未执行</span>
+            </div>
+            <p class="muted">当 Claude、DNS、IPv6、BBR、Xray 或防火墙存在异常时，会优先执行 Level 1 和 Level 2 修复。高风险的防火墙修复默认不执行，只有你明确勾选后才会继续。</p>
+            <div class="form-grid autofix-controls">
+              <label>
+                <span>修复目标</span>
+                <select id="autofixTarget">
+                  <option value="all">一键修复全部异常</option>
+                  <option value="claude">只修复 Claude</option>
+                  <option value="dns">只修复 DNS</option>
+                  <option value="ipv6">只修复 IPv6</option>
+                  <option value="bbr">只修复 BBR</option>
+                  <option value="xray">只修复 Xray</option>
+                  <option value="firewall">只修复防火墙</option>
+                </select>
+              </label>
+              <label class="toggle-row">
+                <span>允许 Level 3 高风险修复</span>
+                <input id="autofixForce" type="checkbox" />
+              </label>
+            </div>
+            <div class="actions">
+              <button class="secondary" id="runAutofix" type="button">执行自动修复</button>
+            </div>
+            <p class="hint" id="autofixResult">部署后如果发现 Claude / DNS / IPv6 / BBR / Xray / 防火墙异常，可以在这里直接一键自愈修复。</p>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">第 4 步</p>
                 <h2>生成客户端配置与订阅链接</h2>
               </div>
             </div>
@@ -246,21 +195,6 @@ sudo usermod -aG sudo appdeploy</code></pre>
             </div>
           </section>
 
-          <section class="panel ai-panel hidden" id="aiPanel">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">受限智能助手</p>
-                <h2>本地脱敏预览</h2>
-              </div>
-              <button class="ghost" id="disableAi">关闭 AI 辅助</button>
-            </div>
-            <textarea id="aiInput" rows="5" placeholder="粘贴错误日志，本地脱敏后再用于 AI 分析"></textarea>
-            <div class="actions">
-              <button class="secondary" id="sanitizeAi">生成脱敏内容</button>
-            </div>
-            <pre id="aiOutput"><code></code></pre>
-          </section>
-
           <section class="panel output-panel">
             <div class="tabs" role="tablist" aria-label="输出内容">
               <button class="tab active" data-tab="script">部署脚本</button>
@@ -268,13 +202,14 @@ sudo usermod -aG sudo appdeploy</code></pre>
               <button class="tab" data-tab="mihomo">Mihomo</button>
               <button class="tab" data-tab="surge">Surge/Stash</button>
               <button class="tab" data-tab="links">客户端链接</button>
+              <button class="tab" data-tab="autofix">自愈报告</button>
               <button class="tab" data-tab="report">安全报告</button>
             </div>
             <div class="output-head">
               <span id="outputTitle">等待生成</span>
               <button class="icon-btn" id="copyOutput" disabled title="复制当前完整内容">复制完整内容</button>
             </div>
-            <pre class="output"><code id="outputCode">请先完成模式选择、账号确认和连接信息填写。</code></pre>
+            <pre class="output"><code id="outputCode">请先完成账号确认、SSH 验证和部署流程。</code></pre>
           </section>
 
           <section class="panel">
@@ -289,6 +224,22 @@ sudo usermod -aG sudo appdeploy</code></pre>
         </div>
       </section>
     </main>
+
+    <div class="modal hidden" id="resultModal" role="dialog" aria-modal="true" aria-labelledby="resultModalTitle">
+      <div class="modal-card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">部署结果提示</p>
+            <h2 id="resultModalTitle">未完成项与原因</h2>
+          </div>
+          <button class="ghost" id="closeResultModal" type="button">关闭</button>
+        </div>
+        <textarea id="resultModalBody" readonly></textarea>
+        <div class="actions">
+          <button class="secondary" id="copyResultModal" type="button">复制文字</button>
+        </div>
+      </div>
+    </div>
 
     <script src="app.js"></script>
   </body>
