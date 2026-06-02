@@ -1,10 +1,12 @@
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { Client } = require("ssh2");
 const { helperActionScript } = require("../scripts/remote-actions.cjs");
 const { createHostVerifier } = require("../scripts/ssh-trust.cjs");
+const { explainDiagnostics } = require("../scripts/ai-explain.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
@@ -65,6 +67,42 @@ app.on("window-all-closed", () => {
 
 function knownHostsPath() {
   return path.join(app.getPath("userData"), "known_hosts.json");
+}
+
+const DEFAULT_AI_BASE_URL = "https://api.deepseek.com";
+const DEFAULT_AI_MODEL = "deepseek-chat";
+
+function aiSettingsPath() {
+  return path.join(app.getPath("userData"), "ai-settings.json");
+}
+
+function loadAiSettings() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(aiSettingsPath(), "utf8"));
+    return {
+      enabled: Boolean(parsed?.enabled),
+      apiKey: typeof parsed?.apiKey === "string" ? parsed.apiKey : "",
+      baseUrl: typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim() ? parsed.baseUrl.trim() : DEFAULT_AI_BASE_URL,
+      model: typeof parsed?.model === "string" && parsed.model.trim() ? parsed.model.trim() : DEFAULT_AI_MODEL
+    };
+  } catch (_error) {
+    return { enabled: false, apiKey: "", baseUrl: DEFAULT_AI_BASE_URL, model: DEFAULT_AI_MODEL };
+  }
+}
+
+function saveAiSettings(next) {
+  fs.mkdirSync(path.dirname(aiSettingsPath()), { recursive: true });
+  fs.writeFileSync(aiSettingsPath(), `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+}
+
+// 只回传是否已配置，绝不把 apiKey 发回渲染层。
+function aiStatus(settings = loadAiSettings()) {
+  return {
+    enabled: settings.enabled,
+    hasKey: Boolean(settings.apiKey),
+    baseUrl: settings.baseUrl,
+    model: settings.model
+  };
 }
 
 function runSshAdminTest({ host, port, username, password, expectedHostFingerprint }) {
@@ -369,6 +407,41 @@ ipcMain.handle("ssh:test-admin", async (_event, payload) => {
 });
 
 ipcMain.handle("crypto:generate-reality-keys", async () => generateRealityKeys());
+
+ipcMain.handle("ai:get-status", async () => aiStatus());
+
+ipcMain.handle("ai:save-settings", async (_event, payload) => {
+  const current = loadAiSettings();
+  const incomingKey = typeof payload?.apiKey === "string" ? payload.apiKey.trim() : null;
+  const next = {
+    enabled: Boolean(payload?.enabled),
+    // 留空表示沿用已存 key，避免设置界面回显明文 key。
+    apiKey: incomingKey === null || incomingKey === "" ? current.apiKey : incomingKey,
+    baseUrl: typeof payload?.baseUrl === "string" && payload.baseUrl.trim() ? payload.baseUrl.trim() : current.baseUrl,
+    model: typeof payload?.model === "string" && payload.model.trim() ? payload.model.trim() : current.model
+  };
+  saveAiSettings(next);
+  return aiStatus(next);
+});
+
+ipcMain.handle("ai:explain-diagnostics", async (_event, payload) => {
+  const settings = loadAiSettings();
+  if (!settings.enabled) {
+    return { ok: false, reason: "disabled", error: "AI 解读未启用。" };
+  }
+  if (!settings.apiKey) {
+    return { ok: false, reason: "no-key", error: "尚未配置 AI 接口密钥。" };
+  }
+  const kind = String(payload?.kind || "").trim();
+  const text = String(payload?.text || "");
+  return explainDiagnostics({
+    apiKey: settings.apiKey,
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    kind,
+    text
+  });
+});
 
 ipcMain.handle("ssh:run-deployment-action", async (_event, payload) => {
   const host = String(payload?.host || "").trim();

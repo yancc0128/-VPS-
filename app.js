@@ -43,7 +43,8 @@ const state = {
   autofixRaw: "",
   autofixSummary: "",
   stepResults: {},
-  deploymentOutcome: "idle"
+  deploymentOutcome: "idle",
+  ai: null
 };
 
 const el = (id) => document.getElementById(id);
@@ -945,6 +946,7 @@ async function runAutofix() {
     state.autofixRaw = result.stdout || "";
     state.autofixSummary = autofixSummaryText(result.stdout || "");
     state.outputs.autofix = extractAutofixReport(result.stdout || "");
+    el("explainAutofix").disabled = !(state.ai?.enabled && state.ai?.hasKey) || !state.autofixRaw;
     el("autofixStatus").classList.remove("pending", "danger", "warning");
     el("autofixStatus").classList.add(/部分修复|遗留告警/.test(state.autofixSummary) ? "warning" : "success");
     el("autofixStatus").textContent = /部分修复|遗留告警/.test(state.autofixSummary) ? "部分完成" : "已完成";
@@ -1056,6 +1058,8 @@ function bindEvents() {
   el("testAdminSsh").addEventListener("click", testAdminSsh);
   el("runDeployStep").addEventListener("click", runDeployStep);
   el("runAutofix").addEventListener("click", runAutofix);
+  el("saveAiSettings").addEventListener("click", saveAiSettings);
+  el("explainAutofix").addEventListener("click", () => explainDiagnostics("autofix"));
   el("resetDeployFlow").addEventListener("click", () => resetDeployFlow(true));
   el("generateAll").addEventListener("click", generateAll);
   el("clearSecrets").addEventListener("click", clearSensitiveData);
@@ -1100,5 +1104,86 @@ function bindEvents() {
   });
 }
 
+function applyAiStatus(status) {
+  state.ai = status || { enabled: false, hasKey: false };
+  const dot = el("aiStatus");
+  const enabledAndReady = Boolean(status?.enabled && status?.hasKey);
+  dot.classList.remove("pending", "success", "danger", "warning");
+  dot.classList.add(enabledAndReady ? "success" : "pending");
+  dot.textContent = enabledAndReady ? "已启用" : status?.enabled ? "缺少密钥" : "未启用";
+
+  el("aiEnabled").checked = Boolean(status?.enabled);
+  if (status?.baseUrl) el("aiBaseUrl").value = status.baseUrl;
+  if (status?.model) el("aiModel").value = status.model;
+  el("aiSettingsHint").textContent = enabledAndReady
+    ? "AI 解读已就绪，可在自愈报告下点击「AI 解读诊断」。"
+    : status?.enabled
+      ? "已启用但缺少密钥，请填写 API Key 后保存。"
+      : "未启用 AI 接口。开启并保存密钥后即可使用。";
+
+  el("explainAutofix").disabled = !enabledAndReady || !state.autofixRaw;
+}
+
+async function loadAiStatus() {
+  if (!window.vpsDesktop?.getAiStatus) return;
+  try {
+    applyAiStatus(await window.vpsDesktop.getAiStatus());
+  } catch (_error) {
+    applyAiStatus({ enabled: false, hasKey: false });
+  }
+}
+
+async function saveAiSettings() {
+  if (!window.vpsDesktop?.saveAiSettings) return;
+  const button = el("saveAiSettings");
+  button.disabled = true;
+  try {
+    const status = await window.vpsDesktop.saveAiSettings({
+      enabled: el("aiEnabled").checked,
+      apiKey: el("aiApiKey").value,
+      baseUrl: el("aiBaseUrl").value.trim(),
+      model: el("aiModel").value.trim()
+    });
+    el("aiApiKey").value = "";
+    applyAiStatus(status);
+    log("已保存 AI 设置。");
+  } catch (_error) {
+    el("aiSettingsHint").textContent = "保存 AI 设置失败，请重试。";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function explainDiagnostics(kind) {
+  const rawByKind = { autofix: state.autofixRaw, claude: state.claudeRaw, bbr: state.bbrRaw };
+  const raw = rawByKind[kind] || "";
+  const output = el("aiExplainOutput");
+  if (!raw) {
+    showResultModal("暂无可解读内容", "请先执行一次自愈或诊断，再使用 AI 解读。");
+    return;
+  }
+  if (!window.vpsDesktop?.explainDiagnostics) return;
+
+  const button = el("explainAutofix");
+  button.disabled = true;
+  output.hidden = false;
+  output.textContent = "AI 正在解读诊断输出，请稍候...";
+  try {
+    const result = await window.vpsDesktop.explainDiagnostics({ kind, text: raw });
+    if (result?.ok) {
+      output.textContent = result.text;
+      log("AI 已生成诊断解读。");
+    } else {
+      output.textContent = `AI 解读不可用：${result?.error || "未知原因"}。以下为本地规则总结：\n\n${state.autofixSummary || "无"}`;
+      log(`AI 解读失败，已回退本地总结：${result?.error || "未知原因"}。`);
+    }
+  } catch (error) {
+    output.textContent = `AI 解读出错：${error.message || "未知错误"}。以下为本地规则总结：\n\n${state.autofixSummary || "无"}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 bindEvents();
+loadAiStatus();
 log("应用已在本地启动。当前仅提供标准部署模式和固定安全协议。");

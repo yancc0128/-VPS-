@@ -35,6 +35,7 @@
       "dist/web/**/*",
       "scripts/remote-actions.cjs",
       "scripts/ssh-trust.cjs",
+      "scripts/ai-explain.cjs",
       "scripts/vps-helper.mjs",
       "node_modules/ssh2/**/*",
       "node_modules/asn1/**/*",
