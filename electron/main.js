@@ -1,12 +1,19 @@
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const crypto = require("node:crypto");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const { Client } = require("ssh2");
 const { helperActionScript } = require("../scripts/remote-actions.cjs");
+const { createHostVerifier } = require("../scripts/ssh-trust.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
 function createWindow() {
+  const entry = isDev
+    ? path.join(__dirname, "..", "index.html")
+    : path.join(__dirname, "..", "dist", "web", "index.html");
+  const allowedEntryUrl = pathToFileURL(entry).toString();
+
   const mainWindow = new BrowserWindow({
     width: 1180,
     height: 820,
@@ -32,15 +39,10 @@ function createWindow() {
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    const currentUrl = mainWindow.webContents.getURL();
-    if (currentUrl && url !== currentUrl && !url.startsWith("file://")) {
+    if (url !== allowedEntryUrl) {
       event.preventDefault();
     }
   });
-
-  const entry = isDev
-    ? path.join(__dirname, "..", "index.html")
-    : path.join(__dirname, "..", "dist", "web", "index.html");
 
   mainWindow.loadFile(entry);
 }
@@ -61,9 +63,14 @@ app.on("window-all-closed", () => {
   }
 });
 
-function runSshAdminTest({ host, port, username, password }) {
+function knownHostsPath() {
+  return path.join(app.getPath("userData"), "known_hosts.json");
+}
+
+function runSshAdminTest({ host, port, username, password, expectedHostFingerprint }) {
   return new Promise((resolve) => {
     const conn = new Client();
+    let settled = false;
     const result = {
       ok: false,
       sshOk: false,
@@ -74,7 +81,19 @@ function runSshAdminTest({ host, port, username, password }) {
       error: ""
     };
 
+    const verifier = createHostVerifier({
+      knownHostsPath: knownHostsPath(),
+      host,
+      port,
+      expectedFingerprint: expectedHostFingerprint,
+      onFingerprint: (fingerprint) => {
+        result.hostFingerprint = fingerprint;
+      }
+    });
+
     const finish = (patch = {}) => {
+      if (settled) return;
+      settled = true;
       Object.assign(result, patch);
       conn.end();
       resolve(result);
@@ -117,7 +136,7 @@ function runSshAdminTest({ host, port, username, password }) {
         });
       })
       .on("error", (error) => {
-        finish({ error: error.message || "SSH 连接失败。" });
+        finish({ error: verifier.getRejection() || error.message || "SSH 连接失败。" });
       })
       .connect({
         host,
@@ -126,11 +145,8 @@ function runSshAdminTest({ host, port, username, password }) {
         password,
         readyTimeout: 15000,
         keepaliveInterval: 5000,
-        hostHash: "sha256",
-        hostVerifier: (hash) => {
-          result.hostFingerprint = `SHA256:${hash}`;
-          return true;
-        }
+        hostHash: verifier.hostHash,
+        hostVerifier: verifier.hostVerifier
       });
   });
 }
@@ -159,7 +175,7 @@ function deploymentActionScript(action, payload) {
   const tempPassword = String(payload.tempPassword || "");
   const sshPort = Number(payload.sshPort) || 22;
   const servicePort = Number(payload.servicePort) || 443;
-  const protocol = String(payload.protocolName || "VLESS + REALITY + Vision");
+  const protocol = safeProtocolName(payload.protocolName);
   const serverConfigJson = String(payload.serverConfigJson || "");
 
   switch (action) {
@@ -205,7 +221,9 @@ ufw status verbose
 
       return `
 set -e
-echo "准备部署协议: ${protocol}"
+PROTOCOL_NAME=${shellQuote(protocol)}
+XRAY_CONFIG_B64=${shellQuote(Buffer.from(serverConfigJson, "utf8").toString("base64"))}
+echo "准备部署协议: $PROTOCOL_NAME"
 if ! command -v systemctl >/dev/null 2>&1; then
   echo "当前系统不支持 systemctl，无法继续服务部署。" >&2
   exit 1
@@ -214,9 +232,7 @@ if ! command -v xray >/dev/null 2>&1; then
   bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 fi
 install -d -m 755 /usr/local/etc/xray
-cat > /usr/local/etc/xray/config.json <<'XRAY_CONFIG'
-${serverConfigJson}
-XRAY_CONFIG
+printf '%s' "$XRAY_CONFIG_B64" | base64 -d > /usr/local/etc/xray/config.json
 systemctl enable xray
 systemctl restart xray
 systemctl --no-pager --full status xray
@@ -235,9 +251,22 @@ echo "服务状态检查完成。"
   }
 }
 
-function runSshAction({ host, port, username, password, sudoPassword, action, actionPayload }) {
+function safeProtocolName(value) {
+  const protocol = String(value || "VLESS + REALITY + Vision").trim();
+  const allowed = new Set([
+    "VLESS + REALITY + Vision",
+    "Xray-core + VLESS + REALITY + XTLS Vision + uTLS"
+  ]);
+  if (!allowed.has(protocol)) {
+    throw new Error("协议名称不在允许列表内。");
+  }
+  return protocol;
+}
+
+function runSshAction({ host, port, username, password, sudoPassword, action, actionPayload, expectedHostFingerprint }) {
   return new Promise((resolve) => {
     const conn = new Client();
+    let settled = false;
     const result = {
       ok: false,
       stdout: "",
@@ -246,7 +275,19 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
       action
     };
 
+    const verifier = createHostVerifier({
+      knownHostsPath: knownHostsPath(),
+      host,
+      port,
+      expectedFingerprint: expectedHostFingerprint,
+      onFingerprint: (fingerprint) => {
+        result.hostFingerprint = fingerprint;
+      }
+    });
+
     const finish = (patch = {}) => {
+      if (settled) return;
+      settled = true;
       Object.assign(result, patch);
       conn.end();
       resolve(result);
@@ -293,7 +334,7 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
         });
       })
       .on("error", (error) => {
-        finish({ error: error.message || "SSH 连接失败。" });
+        finish({ error: verifier.getRejection() || error.message || "SSH 连接失败。" });
       })
       .connect({
         host,
@@ -301,7 +342,9 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
         username,
         password,
         readyTimeout: 15000,
-        keepaliveInterval: 5000
+        keepaliveInterval: 5000,
+        hostHash: verifier.hostHash,
+        hostVerifier: verifier.hostVerifier
       });
   });
 }
@@ -311,6 +354,7 @@ ipcMain.handle("ssh:test-admin", async (_event, payload) => {
   const port = String(payload?.port || "22").trim();
   const username = String(payload?.username || "").trim();
   const password = String(payload?.password || "");
+  const expectedHostFingerprint = String(payload?.hostFingerprint || "").trim();
 
   if (!host || !username || !password) {
     return {
@@ -321,7 +365,7 @@ ipcMain.handle("ssh:test-admin", async (_event, payload) => {
     };
   }
 
-  return runSshAdminTest({ host, port, username, password });
+  return runSshAdminTest({ host, port, username, password, expectedHostFingerprint });
 });
 
 ipcMain.handle("crypto:generate-reality-keys", async () => generateRealityKeys());
@@ -333,6 +377,7 @@ ipcMain.handle("ssh:run-deployment-action", async (_event, payload) => {
   const password = String(payload?.password || "");
   const sudoPassword = String(payload?.sudoPassword || password);
   const action = String(payload?.action || "");
+  const expectedHostFingerprint = String(payload?.hostFingerprint || "").trim();
 
   if (!host || !username || !password || !action) {
     return {
@@ -350,6 +395,7 @@ ipcMain.handle("ssh:run-deployment-action", async (_event, payload) => {
     password,
     sudoPassword,
     action,
-    actionPayload: payload
+    actionPayload: payload,
+    expectedHostFingerprint
   });
 });
