@@ -1059,6 +1059,11 @@ function bindEvents() {
   el("runDeployStep").addEventListener("click", runDeployStep);
   el("runAutofix").addEventListener("click", runAutofix);
   el("saveAiSettings").addEventListener("click", saveAiSettings);
+  el("skipAiSettings").addEventListener("click", () => {
+    const panel = el("aiEnabled").closest(".ai-panel");
+    if (panel) panel.open = false;
+    log("已跳过 AI 配置，可稍后在「AI 诊断解读」中开启。");
+  });
   el("explainAutofix").addEventListener("click", () => explainDiagnostics("autofix"));
   el("resetDeployFlow").addEventListener("click", () => resetDeployFlow(true));
   el("generateAll").addEventListener("click", generateAll);

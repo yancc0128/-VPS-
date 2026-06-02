@@ -172,38 +172,42 @@ sudo whoami</code></pre>
             <pre class="ai-output" id="aiExplainOutput" hidden></pre>
           </section>
 
-          <section class="panel">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">可选增强</p>
-                <h2>AI 诊断解读（默认关闭）</h2>
+          <details class="panel ai-panel">
+            <summary class="ai-summary">
+              <div class="ai-summary-text">
+                <p class="eyebrow">可选增强 · 可随时跳过</p>
+                <h2>AI 诊断解读</h2>
+                <span class="ai-optional-note">不配置也能正常部署，仅在想要自然语言排错时才需要</span>
               </div>
               <span class="status-dot pending" id="aiStatus">未启用</span>
-            </div>
-            <p class="muted">开启后，自愈/诊断的输出会在 <strong>脱敏</strong>（IP、域名、密钥等替换为占位符）后发送到所配置的 AI 接口，仅用于生成自然语言解读。密钥保存在本机，不会发往渲染界面或写入日志。AI 只解读，不会生成或执行任何远程命令。</p>
-            <div class="form-grid">
-              <label class="toggle-row">
-                <span>启用 AI 解读</span>
+            </summary>
+            <div class="ai-body">
+              <p class="muted">开启后，自愈/诊断的输出会在 <strong>脱敏</strong>（IP、域名、密钥等替换为占位符）后发送到所配置的 AI 接口，仅用于生成自然语言解读。密钥保存在本机，不会发往渲染界面或写入日志。AI 只解读，不会生成或执行任何远程命令。</p>
+              <label class="toggle-inline">
                 <input id="aiEnabled" type="checkbox" />
+                <span>启用 AI 解读（可先不填密钥保存，以后再补）</span>
               </label>
-              <label>
-                <span>接口密钥（API Key）</span>
-                <input id="aiApiKey" type="password" autocomplete="off" placeholder="已保存则留空表示不修改" />
-              </label>
-              <label>
-                <span>接口地址</span>
-                <input id="aiBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com" />
-              </label>
-              <label>
-                <span>模型</span>
-                <input id="aiModel" autocomplete="off" placeholder="deepseek-chat" />
-              </label>
+              <div class="form-grid">
+                <label>
+                  <span>接口密钥（API Key）</span>
+                  <input id="aiApiKey" type="password" autocomplete="off" placeholder="已保存则留空表示不修改" />
+                </label>
+                <label>
+                  <span>接口地址</span>
+                  <input id="aiBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com" />
+                </label>
+                <label>
+                  <span>模型</span>
+                  <input id="aiModel" autocomplete="off" placeholder="deepseek-chat" />
+                </label>
+              </div>
+              <div class="actions">
+                <button class="secondary" id="saveAiSettings" type="button">保存 AI 设置</button>
+                <button class="ghost" id="skipAiSettings" type="button">暂不配置</button>
+              </div>
+              <p class="hint" id="aiSettingsHint">未配置 AI 接口。这是可选项，可直接跳过；配置后可在自愈报告下点击「AI 解读诊断」。</p>
             </div>
-            <div class="actions">
-              <button class="secondary" id="saveAiSettings" type="button">保存 AI 设置</button>
-            </div>
-            <p class="hint" id="aiSettingsHint">未配置 AI 接口。配置后可在自愈报告下点击「AI 解读诊断」。</p>
-          </section>
+          </details>
 
           <section class="panel">
             <div class="section-head">
