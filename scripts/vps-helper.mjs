@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 import { Client } from "ssh2";
 import { helperActionScript } from "./remote-actions.cjs";
+import sshTrust from "./ssh-trust.cjs";
+
+const { createHostVerifier } = sshTrust;
 
 function usage() {
   console.log(`vps-helper autofix [target] [options]
@@ -12,16 +17,17 @@ Targets:
   claude | dns | ipv6 | bbr | xray | firewall
 
 Examples:
-  vps-helper autofix claude --host 203.0.113.10 --username myadmin --password '***'
-  vps-helper autofix dns --host 203.0.113.10 --username myadmin --password '***'
-  vps-helper autofix firewall --host 203.0.113.10 --username myadmin --password '***' --force
+  VPS_HOST=203.0.113.10 VPS_USER=myadmin VPS_PASSWORD='***' vps-helper autofix claude
+  VPS_HOST=203.0.113.10 VPS_USER=myadmin VPS_PASSWORD='***' vps-helper autofix dns
+  VPS_HOST=203.0.113.10 VPS_USER=myadmin VPS_PASSWORD='***' vps-helper autofix firewall --force
 
 Options:
   --host            VPS IP
   --port            SSH port, default 22
   --username        SSH username
-  --password        SSH password
+  --password        SSH password, prefer VPS_PASSWORD env to avoid shell history
   --sudo-password   sudo password, default same as --password
+  --host-fingerprint expected SSH host key fingerprint, SHA256:...
   --ssh-port        current SSH service port, default same as --port
   --service-port    proxy service port, default 443
   --server-name     REALITY serverName, default www.cloudflare.com
@@ -29,7 +35,7 @@ Options:
   --force           allow Level 3 high-risk fixes
 
 Env fallback:
-  VPS_HOST VPS_PORT VPS_USER VPS_PASSWORD VPS_SUDO_PASSWORD VPS_SSH_PORT VPS_SERVICE_PORT VPS_SERVER_NAME
+  VPS_HOST VPS_PORT VPS_USER VPS_PASSWORD VPS_SUDO_PASSWORD VPS_HOST_FINGERPRINT VPS_SSH_PORT VPS_SERVICE_PORT VPS_SERVER_NAME
 `);
 }
 
@@ -72,9 +78,14 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-function runSshAction({ host, port, username, password, sudoPassword, action, actionPayload }) {
+function knownHostsPath() {
+  return process.env.VPS_HELPER_KNOWN_HOSTS || path.join(os.homedir(), ".vps-helper-known-hosts.json");
+}
+
+function runSshAction({ host, port, username, password, sudoPassword, action, actionPayload, expectedHostFingerprint }) {
   return new Promise((resolve) => {
     const conn = new Client();
+    let settled = false;
     const result = {
       ok: false,
       stdout: "",
@@ -83,7 +94,16 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
       action
     };
 
+    const verifier = createHostVerifier({
+      knownHostsPath: knownHostsPath(),
+      host,
+      port,
+      expectedFingerprint: expectedHostFingerprint
+    });
+
     const finish = (patch = {}) => {
+      if (settled) return;
+      settled = true;
       Object.assign(result, patch);
       conn.end();
       resolve(result);
@@ -125,7 +145,7 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
         });
       })
       .on("error", (error) => {
-        finish({ error: error.message || "SSH 连接失败。" });
+        finish({ error: verifier.getRejection() || error.message || "SSH 连接失败。" });
       })
       .connect({
         host,
@@ -133,7 +153,9 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
         username,
         password,
         readyTimeout: 15000,
-        keepaliveInterval: 5000
+        keepaliveInterval: 5000,
+        hostHash: verifier.hostHash,
+        hostVerifier: verifier.hostVerifier
       });
   });
 }
@@ -157,6 +179,7 @@ async function main() {
   const username = args.username || process.env.VPS_USER;
   const password = args.password || process.env.VPS_PASSWORD;
   const sudoPassword = args["sudo-password"] || process.env.VPS_SUDO_PASSWORD || password;
+  const expectedHostFingerprint = args["host-fingerprint"] || process.env.VPS_HOST_FINGERPRINT || "";
   const sshPort = args["ssh-port"] || process.env.VPS_SSH_PORT || port;
   const servicePort = args["service-port"] || process.env.VPS_SERVICE_PORT || "443";
   const serverName = args["server-name"] || process.env.VPS_SERVER_NAME || "www.cloudflare.com";
@@ -188,7 +211,8 @@ async function main() {
     password,
     sudoPassword,
     action,
-    actionPayload: payload
+    actionPayload: payload,
+    expectedHostFingerprint
   });
 
   process.stdout.write(result.stdout || "");

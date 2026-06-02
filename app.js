@@ -95,6 +95,19 @@ function bytesToBase64Url(bytes) {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
+function bytesToBase64(bytes) {
+  const bin = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+  return btoa(bin);
+}
+
+function base64Utf8(value) {
+  return bytesToBase64(new TextEncoder().encode(String(value)));
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 function randomHex(bytes = 8) {
   const data = new Uint8Array(bytes);
   crypto.getRandomValues(data);
@@ -304,6 +317,7 @@ async function runSingleDeployStep(step, steps) {
     username: creds.username,
     password: creds.password,
     sudoPassword: creds.sudoPassword,
+    hostFingerprint: v.hostFingerprint,
     serverName: v.serverName,
     force: false
   };
@@ -465,7 +479,8 @@ async function testAdminSsh() {
       host: v.ip,
       port: v.sshPort,
       username: v.adminUser,
-      password
+      password,
+      hostFingerprint: v.hostFingerprint
     });
 
     state.adminVerification = result;
@@ -495,14 +510,16 @@ async function testAdminSsh() {
 function deploymentScript(v, secrets) {
   const protocolName = protocols[state.protocol].name;
   const xrayConfig = JSON.stringify(xrayServerConfig(v, secrets), null, 2);
+  const xrayConfigB64 = base64Utf8(xrayConfig);
 
   return `#!/usr/bin/env bash
 set -Eeuo pipefail
 
-DEPLOY_USER="${v.adminUser}"
-SSH_PORT="${v.sshPort}"
-SERVICE_PORT="${v.servicePort}"
-PROTOCOL="${protocolName}"
+DEPLOY_USER=${shellQuote(v.adminUser)}
+SSH_PORT=${shellQuote(v.sshPort)}
+SERVICE_PORT=${shellQuote(v.servicePort)}
+PROTOCOL=${shellQuote(protocolName)}
+XRAY_CONFIG_B64=${shellQuote(xrayConfigB64)}
 DEPLOY_IDENTITY="admin"
 
 echo "[1/8] 检查系统版本、CPU 架构、网络和端口"
@@ -523,11 +540,9 @@ sudo ufw status verbose
 echo "[4/8] 安装 Xray Core"
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-echo "[5/8] 写入 ${protocolName} 服务配置"
+echo "[5/8] 写入 $PROTOCOL 服务配置"
 sudo install -d -m 755 /usr/local/etc/xray
-sudo tee /usr/local/etc/xray/config.json >/dev/null <<'XRAY_CONFIG'
-${xrayConfig}
-XRAY_CONFIG
+printf '%s' "$XRAY_CONFIG_B64" | base64 -d | sudo tee /usr/local/etc/xray/config.json >/dev/null
 
 echo "[6/8] 启动服务并测试状态"
 sudo systemctl enable xray
@@ -901,6 +916,7 @@ async function runAutofix() {
     username: creds.username,
     password: creds.password,
     sudoPassword: creds.sudoPassword,
+    hostFingerprint: v.hostFingerprint,
     serverName: v.serverName,
     force
   };
