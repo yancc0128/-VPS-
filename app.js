@@ -52,6 +52,8 @@ const els = (selector) => Array.from(document.querySelectorAll(selector));
 
 const sensitivePatterns = [
   [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[IP已隐藏]"],
+  // IPv6：要求出现十六进制字母或 `::` 压缩段，避免误伤 12:34:56 这类时间戳。
+  [/(?<![0-9a-f:])(?=[0-9a-f:]*[a-f]|[0-9a-f:]*::)(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?:%[0-9a-z]+)?(?![0-9a-f:])/gi, "[IPv6已隐藏]"],
   [/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi, "[UUID已隐藏]"],
   [/(privateKey|password|passwd|pwd|uuid|shortId|server|address|host|sni)(\s*[:=]\s*)("[^"]+"|'[^']+'|[^\s,\n]+)/gi, "$1$2[已隐藏]"],
   [/vless:\/\/[^\s"']+/gi, "[订阅链接已隐藏]"],

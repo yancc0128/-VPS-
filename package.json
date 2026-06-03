@@ -18,6 +18,7 @@
     "dist:win": "npm run build:web && electron-builder --win portable --x64",
     "dist:mac": "npm run build:web && electron-builder --mac dmg zip --arm64",
     "check": "node --check app.js",
+    "test": "node --test \"test/**/*.test.cjs\"",
     "vps-helper": "node scripts/vps-helper.mjs",
     "serve:android-preview": "python3 -m http.server 5173",
     "serve:windows-preview": "python3 -m http.server 5173"
