@@ -3,16 +3,6 @@ const protocols = {
     name: "VLESS + REALITY + Vision",
     summary: "默认推荐。安全、抗识别和稳定优先，适合大多数自托管 VPS。",
     port: "443"
-  },
-  hysteria2: {
-    name: "Hysteria2",
-    summary: "移动网络和速度优先时推荐。需要 UDP 可用，适合高丢包环境。",
-    port: "8443"
-  },
-  tuic: {
-    name: "TUIC v5",
-    summary: "UDP 可用且低延迟优先时推荐。适合对响应速度敏感的场景。",
-    port: "443"
   }
 };
 
