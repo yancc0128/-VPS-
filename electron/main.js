@@ -10,6 +10,10 @@ const { explainDiagnostics } = require("../scripts/ai-explain.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
+// 远程命令整体看门狗：连接握手由 readyTimeout 负责，这里防的是命令卡死
+// （例如 apt-get 卡在交互提示）导致 keepalive 仍在维持连接、Promise 永不结束。
+const REMOTE_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
+
 function createWindow() {
   const entry = isDev
     ? path.join(__dirname, "..", "index.html")
@@ -129,13 +133,19 @@ function runSshAdminTest({ host, port, username, password, expectedHostFingerpri
       }
     });
 
+    let watchdog = null;
     const finish = (patch = {}) => {
       if (settled) return;
       settled = true;
+      if (watchdog) clearTimeout(watchdog);
       Object.assign(result, patch);
       conn.end();
       resolve(result);
     };
+
+    watchdog = setTimeout(() => {
+      finish({ error: "SSH 测试超时，远程长时间无响应。" });
+    }, REMOTE_EXEC_TIMEOUT_MS);
 
     conn
       .on("ready", () => {
@@ -149,6 +159,9 @@ function runSshAdminTest({ host, port, username, password, expectedHostFingerpri
           let stdout = "";
           let stderr = "";
           stream
+            .on("error", (streamError) => {
+              finish({ error: streamError.message || "SSH 执行通道异常中断。" });
+            })
             .on("close", (code) => {
               const lines = stdout
                 .split(/\r?\n/)
@@ -323,9 +336,11 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
       }
     });
 
+    let watchdog = null;
     const finish = (patch = {}) => {
       if (settled) return;
       settled = true;
+      if (watchdog) clearTimeout(watchdog);
       Object.assign(result, patch);
       conn.end();
       resolve(result);
@@ -338,6 +353,10 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
       resolve({ ...result, error: error.message || "部署动作无效。" });
       return;
     }
+
+    watchdog = setTimeout(() => {
+      finish({ error: "部署步骤执行超时，远程命令长时间无响应。" });
+    }, REMOTE_EXEC_TIMEOUT_MS);
 
     conn
       .on("ready", () => {
@@ -352,6 +371,9 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
           }
 
           stream
+            .on("error", (streamError) => {
+              finish({ error: streamError.message || "SSH 执行通道异常中断。" });
+            })
             .on("close", (code) => {
               finish({
                 ok: code === 0,

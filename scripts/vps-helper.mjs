@@ -10,6 +10,9 @@ import sshTrust from "./ssh-trust.cjs";
 
 const { createHostVerifier } = sshTrust;
 
+// 远程命令整体看门狗，防止命令卡死导致 CLI 永不退出。
+const REMOTE_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
+
 function usage() {
   console.log(`vps-helper autofix [target] [options]
 
@@ -101,9 +104,11 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
       expectedFingerprint: expectedHostFingerprint
     });
 
+    let watchdog = null;
     const finish = (patch = {}) => {
       if (settled) return;
       settled = true;
+      if (watchdog) clearTimeout(watchdog);
       Object.assign(result, patch);
       conn.end();
       resolve(result);
@@ -117,6 +122,10 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
       return;
     }
 
+    watchdog = setTimeout(() => {
+      finish({ error: "autofix 执行超时，远程命令长时间无响应。" });
+    }, REMOTE_EXEC_TIMEOUT_MS);
+
     conn
       .on("ready", () => {
         const wrapped = `sudo -S -p '' bash -lc ${shellQuote(script)}`;
@@ -127,6 +136,9 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
           }
 
           stream
+            .on("error", (streamError) => {
+              finish({ error: streamError.message || "SSH 执行通道异常中断。" });
+            })
             .on("close", (code) => {
               finish({
                 ok: code === 0,

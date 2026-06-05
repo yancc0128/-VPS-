@@ -544,7 +544,7 @@ sudo systemctl --no-pager --full status xray
 sudo ss -tulpen | grep ":\${SERVICE_PORT}" || (echo "服务端口未监听" >&2; exit 1)
 
 echo "[7/8] 确认 SSH 端口仍开放"
-sudo ufw status | grep "\${SSH_PORT}/tcp" || (echo "SSH 端口未开放，停止删除临时账号" >&2; exit 1)
+sudo ufw status | grep "\${SSH_PORT}/tcp" || (echo "SSH 端口未在防火墙放行，请人工核对后再断开当前连接" >&2; exit 1)
 
 echo "[8/8] 完成部署"
 echo "部署完成。以后请继续使用长期管理员账号 ${v.adminUser} 管理 VPS。"
@@ -705,7 +705,7 @@ function report(v) {
 客户端配置生成状态: ${clients} 已在本地生成
 长期管理员验证状态: ${state.adminVerified ? "已通过 SSH 登录和 sudo 测试" : "未通过"}
 部署身份策略: 直接使用长期管理员账号 ${v.adminUser} 部署
-AI 辅助状态: 未启用
+AI 辅助状态: ${state.ai?.enabled ? (state.ai?.hasKey ? "已启用（仅本地解读，发送前脱敏）" : "已开启但未配置密钥") : "未启用"}
 Host key 指纹: ${v.hostFingerprint || "用户尚未填写"}
 BBR 状态: ${state.bbrSummary || "未在部署步骤中检测"}
 Claude 连通性: ${state.claudeSummary || "未在部署步骤中检测"}
