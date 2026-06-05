@@ -289,6 +289,52 @@ function closeActiveSession() {
   state.sessionId = null;
 }
 
+// 弹出命令预览，返回用户是否确认执行的 Promise<boolean>。
+function confirmCommandPreview(title, script) {
+  return new Promise((resolve) => {
+    el("previewModalTitle").textContent = title;
+    el("previewModalBody").textContent = display(script);
+    const modal = el("previewModal");
+    const confirmBtn = el("previewConfirm");
+    const cancelBtn = el("previewCancel");
+    const settle = (decision) => {
+      modal.classList.add("hidden");
+      confirmBtn.removeEventListener("click", onConfirm);
+      cancelBtn.removeEventListener("click", onCancel);
+      resolve(decision);
+    };
+    const onConfirm = () => settle(true);
+    const onCancel = () => settle(false);
+    confirmBtn.addEventListener("click", onConfirm);
+    cancelBtn.addEventListener("click", onCancel);
+    modal.classList.remove("hidden");
+  });
+}
+
+// 生成整套部署各步骤的远端脚本预览文本（不连接、不执行）。
+async function buildDeployPlanPreview(steps) {
+  const v = values();
+  const sections = [];
+  for (const step of steps) {
+    const payload = {
+      action: step.id,
+      sshPort: v.sshPort,
+      servicePort: v.servicePort,
+      protocolName: protocols[state.protocol].name,
+      serverName: v.serverName,
+      force: false
+    };
+    if (step.id === "install-proxy-service" || step.id === "autofix-all") {
+      const secrets = await ensureSecrets();
+      payload.serverConfigJson = JSON.stringify(xrayServerConfig(v, secrets), null, 2);
+    }
+    const preview = await window.vpsDesktop.previewAction(payload);
+    const script = preview?.ok ? preview.script : `（无法生成预览：${preview?.error || "未知原因"}）`;
+    sections.push(`# ${step.title}\n${script}`);
+  }
+  return sections.join("\n\n────────────────────\n\n");
+}
+
 function showResultModal(title, text) {
   el("resultModalTitle").textContent = title;
   el("resultModalBody").value = display(text || "没有可显示的内容。");
@@ -449,6 +495,22 @@ async function runDeployStep() {
   }
 
   const steps = deploySteps();
+
+  if (el("previewBeforeRun")?.checked && desktopApi.previewAction) {
+    try {
+      const plan = await buildDeployPlanPreview(steps);
+      const confirmed = await confirmCommandPreview("执行前确认整套部署命令", plan);
+      if (!confirmed) {
+        log("已在执行前取消整套部署，未连接服务器。");
+        return;
+      }
+    } catch (error) {
+      showResultModal("无法生成命令预览", error.message || "预览失败，请重试。");
+      log(`生成命令预览失败：${error.message || "未知错误"}。`);
+      return;
+    }
+  }
+
   state.deploymentRunning = true;
   state.cancelRequested = false;
   el("deployRunStatus").textContent = "自动部署中";

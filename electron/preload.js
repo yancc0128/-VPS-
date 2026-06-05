@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("vpsDesktop", {
   runSessionStep: (payload) => ipcRenderer.invoke("ssh:run-step", payload),
   cancelSessionStep: (sessionId) => ipcRenderer.invoke("ssh:cancel-step", { sessionId }),
   closeSshSession: (sessionId) => ipcRenderer.invoke("ssh:close-session", { sessionId }),
+  previewAction: (payload) => ipcRenderer.invoke("ssh:preview-action", payload),
   // 订阅步骤的流式输出；返回取消订阅函数。
   onStepOutput: (callback) => {
     const listener = (_event, data) => callback(data);

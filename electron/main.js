@@ -617,6 +617,17 @@ ipcMain.handle("ssh:cancel-step", async (_event, payload) => cancelSessionStep(S
 
 ipcMain.handle("ssh:close-session", async (_event, payload) => closeSshSession(String(payload?.sessionId || "")));
 
+// 纯预览：仅生成将下发到远端的脚本文本，不建立连接、不执行。
+ipcMain.handle("ssh:preview-action", async (_event, payload) => {
+  const action = String(payload?.action || "");
+  if (!action) return { ok: false, error: "缺少部署动作。" };
+  try {
+    return { ok: true, script: deploymentActionScript(action, payload || {}) };
+  } catch (error) {
+    return { ok: false, error: error.message || "无法生成命令预览。" };
+  }
+});
+
 ipcMain.handle("ssh:test-admin", async (_event, payload) => {
   const host = String(payload?.host || "").trim();
   const port = String(payload?.port || "22").trim();
