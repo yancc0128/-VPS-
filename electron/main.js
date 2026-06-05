@@ -7,6 +7,7 @@ const { Client } = require("ssh2");
 const { helperActionScript } = require("../scripts/remote-actions.cjs");
 const { createHostVerifier } = require("../scripts/ssh-trust.cjs");
 const { explainDiagnostics } = require("../scripts/ai-explain.cjs");
+const { buildSshAuth, hasCredential, resolveSudoPassword } = require("../scripts/ssh-auth.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
@@ -109,7 +110,7 @@ function aiStatus(settings = loadAiSettings()) {
   };
 }
 
-function runSshAdminTest({ host, port, username, password, expectedHostFingerprint }) {
+function runSshAdminTest({ host, port, username, password, privateKey, keyPassphrase, sudoPassword, expectedHostFingerprint }) {
   return new Promise((resolve) => {
     const conn = new Client();
     let settled = false;
@@ -182,7 +183,7 @@ function runSshAdminTest({ host, port, username, password, expectedHostFingerpri
               stderr += data.toString("utf8");
             });
 
-          stream.write(`${password}\n`);
+          stream.write(`${resolveSudoPassword({ sudoPassword, password })}\n`);
           stream.end();
         });
       })
@@ -193,7 +194,7 @@ function runSshAdminTest({ host, port, username, password, expectedHostFingerpri
         host,
         port: Number(port) || 22,
         username,
-        password,
+        ...buildSshAuth({ password, privateKey, passphrase: keyPassphrase }),
         readyTimeout: 15000,
         keepaliveInterval: 5000,
         hostHash: verifier.hostHash,
@@ -314,7 +315,7 @@ function safeProtocolName(value) {
   return protocol;
 }
 
-function runSshAction({ host, port, username, password, sudoPassword, action, actionPayload, expectedHostFingerprint }) {
+function runSshAction({ host, port, username, password, privateKey, keyPassphrase, sudoPassword, action, actionPayload, expectedHostFingerprint }) {
   return new Promise((resolve) => {
     const conn = new Client();
     let settled = false;
@@ -388,7 +389,7 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
             });
 
           if (action !== "system-check") {
-            stream.write(`${sudoPassword || password}\n`);
+            stream.write(`${resolveSudoPassword({ sudoPassword, password })}\n`);
           }
           stream.end();
         });
@@ -400,7 +401,7 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
         host,
         port: Number(port) || 22,
         username,
-        password,
+        ...buildSshAuth({ password, privateKey, passphrase: keyPassphrase }),
         readyTimeout: 15000,
         keepaliveInterval: 5000,
         hostHash: verifier.hostHash,
@@ -414,18 +415,21 @@ ipcMain.handle("ssh:test-admin", async (_event, payload) => {
   const port = String(payload?.port || "22").trim();
   const username = String(payload?.username || "").trim();
   const password = String(payload?.password || "");
+  const privateKey = String(payload?.privateKey || "");
+  const keyPassphrase = String(payload?.keyPassphrase || "");
+  const sudoPassword = String(payload?.sudoPassword || "");
   const expectedHostFingerprint = String(payload?.hostFingerprint || "").trim();
 
-  if (!host || !username || !password) {
+  if (!host || !username || !hasCredential({ password, privateKey })) {
     return {
       ok: false,
       sshOk: false,
       sudoOk: false,
-      error: "请填写 VPS IP、长期管理员用户名和密码。"
+      error: "请填写 VPS IP、长期管理员用户名，以及登录密码或私钥。"
     };
   }
 
-  return runSshAdminTest({ host, port, username, password, expectedHostFingerprint });
+  return runSshAdminTest({ host, port, username, password, privateKey, keyPassphrase, sudoPassword, expectedHostFingerprint });
 });
 
 ipcMain.handle("crypto:generate-reality-keys", async () => generateRealityKeys());
@@ -470,16 +474,18 @@ ipcMain.handle("ssh:run-deployment-action", async (_event, payload) => {
   const port = String(payload?.port || "22").trim();
   const username = String(payload?.username || "").trim();
   const password = String(payload?.password || "");
-  const sudoPassword = String(payload?.sudoPassword || password);
+  const privateKey = String(payload?.privateKey || "");
+  const keyPassphrase = String(payload?.keyPassphrase || "");
+  const sudoPassword = String(payload?.sudoPassword || "");
   const action = String(payload?.action || "");
   const expectedHostFingerprint = String(payload?.hostFingerprint || "").trim();
 
-  if (!host || !username || !password || !action) {
+  if (!host || !username || !hasCredential({ password, privateKey }) || !action) {
     return {
       ok: false,
       stdout: "",
       stderr: "",
-      error: "缺少 VPS、账号、密码或部署动作。"
+      error: "缺少 VPS、账号、登录凭据或部署动作。"
     };
   }
 
@@ -488,6 +494,8 @@ ipcMain.handle("ssh:run-deployment-action", async (_event, payload) => {
     port,
     username,
     password,
+    privateKey,
+    keyPassphrase,
     sudoPassword,
     action,
     actionPayload: payload,

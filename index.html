@@ -59,8 +59,27 @@
                 <input id="adminUser" autocomplete="off" value="myadmin" />
               </label>
               <label>
+                <span>登录方式</span>
+                <select id="authMethod">
+                  <option value="password">密码登录</option>
+                  <option value="privateKey">私钥登录</option>
+                </select>
+              </label>
+              <label id="pwdField">
                 <span>长期管理员密码</span>
                 <input id="adminPassword" type="password" autocomplete="new-password" placeholder="仅用于本机 SSH 验证，不保存" />
+              </label>
+              <label id="keyField" class="span-2" hidden>
+                <span>SSH 私钥（PEM，仅保存在本页内存）</span>
+                <textarea id="privateKey" rows="4" autocomplete="off" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+              </label>
+              <label id="passphraseField" hidden>
+                <span>私钥 passphrase（如有）</span>
+                <input id="keyPassphrase" type="password" autocomplete="off" placeholder="私钥已加密时填写" />
+              </label>
+              <label>
+                <span>sudo 密码（可选）</span>
+                <input id="sudoPassword" type="password" autocomplete="off" placeholder="留空=用登录密码；私钥+NOPASSWD 可留空" />
               </label>
               <label class="span-2">
                 <span>首次 SSH 连接看到的 host key 指纹</span>

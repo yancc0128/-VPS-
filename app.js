@@ -288,11 +288,12 @@ function incompleteStepMessages() {
 
 function deployCredentialsFor(stepId) {
   const v = values();
-  const adminPassword = el("adminPassword").value;
   return {
     username: v.adminUser,
-    password: adminPassword,
-    sudoPassword: adminPassword
+    password: el("adminPassword").value,
+    privateKey: el("privateKey")?.value || "",
+    keyPassphrase: el("keyPassphrase")?.value || "",
+    sudoPassword: el("sudoPassword")?.value || ""
   };
 }
 
@@ -309,6 +310,8 @@ async function runSingleDeployStep(step, steps) {
     protocolName: protocols[state.protocol].name,
     username: creds.username,
     password: creds.password,
+    privateKey: creds.privateKey,
+    keyPassphrase: creds.keyPassphrase,
     sudoPassword: creds.sudoPassword,
     hostFingerprint: v.hostFingerprint,
     serverName: v.serverName,
@@ -435,6 +438,13 @@ async function runDeployStep() {
   updateGenerateState();
 }
 
+function applyAuthMethod() {
+  const isKey = el("authMethod").value === "privateKey";
+  el("pwdField").hidden = isKey;
+  el("keyField").hidden = !isKey;
+  el("passphraseField").hidden = !isKey;
+}
+
 function setAdminVerification(status, message) {
   const statusEl = el("adminVerifyStatus");
   statusEl.classList.remove("pending", "success", "danger");
@@ -460,7 +470,7 @@ async function testAdminSsh() {
   }
 
   const v = values();
-  const password = el("adminPassword").value;
+  const creds = deployCredentialsFor("verify-deploy-user");
   const button = el("testAdminSsh");
   button.disabled = true;
   button.textContent = "正在测试...";
@@ -472,7 +482,10 @@ async function testAdminSsh() {
       host: v.ip,
       port: v.sshPort,
       username: v.adminUser,
-      password,
+      password: creds.password,
+      privateKey: creds.privateKey,
+      keyPassphrase: creds.keyPassphrase,
+      sudoPassword: creds.sudoPassword,
       hostFingerprint: v.hostFingerprint
     });
 
@@ -908,6 +921,8 @@ async function runAutofix() {
     protocolName: protocols[state.protocol].name,
     username: creds.username,
     password: creds.password,
+    privateKey: creds.privateKey,
+    keyPassphrase: creds.keyPassphrase,
     sudoPassword: creds.sudoPassword,
     hostFingerprint: v.hostFingerprint,
     serverName: v.serverName,
@@ -990,7 +1005,7 @@ function clearSensitiveData() {
   state.outputs = {};
   state.adminVerified = false;
   state.adminVerification = null;
-  ["vpsIp", "adminPassword", "hostFingerprint"].forEach((id) => {
+  ["vpsIp", "adminPassword", "privateKey", "keyPassphrase", "sudoPassword", "hostFingerprint"].forEach((id) => {
     el(id).value = "";
   });
   setAdminVerification("pending", "敏感数据已清空，请重新测试长期管理员账号。");
@@ -1030,11 +1045,18 @@ function bindEvents() {
     log(`客户端配置选择已更新：${clientSelectionText()}。`);
   });
 
-  ["vpsIp", "sshPort", "adminUser", "adminPassword"].forEach((id) => {
+  ["vpsIp", "sshPort", "adminUser", "adminPassword", "privateKey", "keyPassphrase", "sudoPassword"].forEach((id) => {
     el(id).addEventListener("input", () => {
       resetAdminVerification();
       resetDeployFlow(false);
     });
+  });
+
+  el("authMethod").addEventListener("change", () => {
+    applyAuthMethod();
+    resetAdminVerification();
+    resetDeployFlow(false);
+    log(el("authMethod").value === "privateKey" ? "已切换为私钥登录。" : "已切换为密码登录。");
   });
 
   ["servicePort", "serverName", "hostFingerprint"].forEach((id) => {
@@ -1182,5 +1204,6 @@ async function explainDiagnostics(kind) {
 }
 
 bindEvents();
+applyAuthMethod();
 loadAiStatus();
 log("应用已在本地启动。当前仅提供标准部署模式和固定安全协议。");

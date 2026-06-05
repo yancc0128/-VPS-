@@ -36,11 +36,18 @@
 
 界面填写并点击「测试长期管理员」(`testAdminSsh`)：
 
-1. 输入 **VPS IP、SSH 端口、管理员用户名、密码**。
-2. （可选）填 **Host key 指纹**做首次预校验；留空则首次连接自动记录。
-3. 工具执行 `uname -a && sudo -S -p '' whoami`，**要求 `sudo whoami` 输出 `root`** 才算通过。
-4. **主机指纹 TOFU**：首次连接把 SHA256 指纹写入 `known_hosts.json`（`0600`）；之后每次比对，
+1. 输入 **VPS IP、SSH 端口、管理员用户名**。
+2. 选择**登录方式**：
+   - **密码登录**：填管理员密码。
+   - **私钥登录**：粘贴 PEM 私钥（仅存本页内存），加密私钥再填 passphrase。
+   - **sudo 密码（可选）**：留空则用登录密码；私钥登录且 NOPASSWD 时可留空。
+3. （可选）填 **Host key 指纹**做首次预校验；留空则首次连接自动记录。
+4. 工具执行 `uname -a && sudo -S -p '' whoami`，**要求 `sudo whoami` 输出 `root`** 才算通过。
+5. **主机指纹 TOFU**：首次连接把 SHA256 指纹写入 `known_hosts.json`（`0600`）；之后每次比对，
    **指纹不一致直接拒绝连接**并提示（可能是重装/换 IP/中间人）。
+
+> CLI 同样支持：`--private-key <路径或内联PEM>`、`--key-passphrase`、`--sudo-password`
+> （或环境变量 `VPS_PRIVATE_KEY` / `VPS_KEY_PASSPHRASE` / `VPS_SUDO_PASSWORD`）。
 
 ✅ 通过后 `state.adminVerified = true`，才能进入部署向导。
 
