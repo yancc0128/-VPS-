@@ -846,6 +846,25 @@ button:disabled {
   font-size: 13px;
 }
 
+.runner-live {
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.runner-live[hidden] {
+  display: none;
+}
+
 .hidden {
   display: none !important;
 }

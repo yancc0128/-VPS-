@@ -150,8 +150,10 @@ sudo whoami</code></pre>
                 <p id="deployCurrentHint">完成 SSH 验证后，点击开始部署。</p>
                 <div class="actions">
                   <button class="primary" id="runDeployStep" type="button" disabled>开始自动部署</button>
+                  <button class="secondary" id="cancelDeployStep" type="button" hidden>取消当前步骤</button>
                   <button class="ghost" id="resetDeployFlow" type="button">重置部署流程</button>
                 </div>
+                <pre class="runner-live" id="deployLiveOutput" hidden></pre>
               </div>
             </div>
           </section>

@@ -34,7 +34,10 @@ const state = {
   autofixSummary: "",
   stepResults: {},
   deploymentOutcome: "idle",
-  ai: null
+  ai: null,
+  sessionId: null,
+  liveBuffer: "",
+  cancelRequested: false
 };
 
 const el = (id) => document.getElementById(id);
@@ -226,8 +229,12 @@ function resetDeployFlow(shouldLog = true) {
   state.deploymentStepIndex = 0;
   state.deploymentCompleted = false;
   state.deploymentRunning = false;
+  state.cancelRequested = false;
   state.stepResults = {};
   state.deploymentOutcome = "idle";
+  state.liveBuffer = "";
+  renderLiveOutput();
+  closeActiveSession();
   el("deployRunStatus").classList.remove("success", "danger", "warning");
   el("deployRunStatus").classList.add("pending");
   el("deployRunStatus").textContent = "未开始";
@@ -246,6 +253,11 @@ function deployPrerequisitesReady() {
 function updateDeployRunnerState() {
   if (!el("runDeployStep")) return;
   el("runDeployStep").disabled = state.deploymentRunning || state.deploymentCompleted || !deployPrerequisitesReady();
+  const cancelBtn = el("cancelDeployStep");
+  if (cancelBtn) {
+    cancelBtn.hidden = !state.deploymentRunning;
+    cancelBtn.disabled = state.cancelRequested;
+  }
   if (state.deploymentCompleted) {
     el("runDeployStep").textContent = "自动部署已完成";
   } else if (state.deploymentRunning) {
@@ -254,6 +266,27 @@ function updateDeployRunnerState() {
     el("runDeployStep").textContent = "开始自动部署";
   }
   renderDeploySteps();
+}
+
+function renderLiveOutput() {
+  const out = el("deployLiveOutput");
+  if (!out) return;
+  out.hidden = !state.liveBuffer;
+  out.textContent = display(state.liveBuffer);
+  out.scrollTop = out.scrollHeight;
+}
+
+function handleStepOutput(data) {
+  if (!data || data.sessionId !== state.sessionId) return;
+  state.liveBuffer += data.chunk;
+  renderLiveOutput();
+}
+
+function closeActiveSession() {
+  if (state.sessionId && window.vpsDesktop?.closeSshSession) {
+    window.vpsDesktop.closeSshSession(state.sessionId);
+  }
+  state.sessionId = null;
 }
 
 function showResultModal(title, text) {
@@ -328,9 +361,11 @@ async function runSingleDeployStep(step, steps) {
   el("deployRunStatus").textContent = "执行中";
   el("deployCurrentTitle").textContent = step.title;
   el("deployCurrentHint").textContent = step.hint || "正在安装或配置，请等待。不要关闭应用。";
+  state.liveBuffer = `# ${step.title}\n`;
+  renderLiveOutput();
   updateDeployRunnerState();
 
-  const result = await window.vpsDesktop.runDeploymentAction(payload);
+  const result = await window.vpsDesktop.runSessionStep({ sessionId: state.sessionId, ...payload });
 
   if (!result.ok) {
     state.stepResults[step.id] = {
@@ -402,7 +437,7 @@ async function runSingleDeployStep(step, steps) {
 
 async function runDeployStep() {
   const desktopApi = window.vpsDesktop;
-  if (!desktopApi?.runDeploymentAction) {
+  if (!desktopApi?.openSshSession || !desktopApi?.runSessionStep) {
     showResultModal("无法开始自动部署", "当前是 Web 预览版，不能直接执行远程部署。请使用桌面版。");
     log("当前环境不支持远程部署执行，请使用 Electron 桌面版。");
     return;
@@ -415,11 +450,35 @@ async function runDeployStep() {
 
   const steps = deploySteps();
   state.deploymentRunning = true;
+  state.cancelRequested = false;
   el("deployRunStatus").textContent = "自动部署中";
-  el("deployCurrentHint").textContent = "正在按顺序执行部署步骤，请等待。";
+  el("deployCurrentHint").textContent = "正在建立 SSH 会话...";
   updateDeployRunnerState();
 
   try {
+    const v = values();
+    const creds = deployCredentialsFor("verify-deploy-user");
+    const session = await desktopApi.openSshSession({
+      host: v.ip,
+      port: v.sshPort,
+      username: creds.username,
+      password: creds.password,
+      privateKey: creds.privateKey,
+      keyPassphrase: creds.keyPassphrase,
+      sudoPassword: creds.sudoPassword,
+      hostFingerprint: v.hostFingerprint
+    });
+    if (!session?.ok) {
+      el("deployRunStatus").classList.remove("pending");
+      el("deployRunStatus").classList.add("danger");
+      el("deployRunStatus").textContent = "❌ 未完成";
+      showResultModal("无法建立 SSH 会话", session?.error || "连接失败，请检查网络与凭据。");
+      log(`建立 SSH 会话失败：${session?.error || "未知错误"}。`);
+      return;
+    }
+    state.sessionId = session.sessionId;
+    log("SSH 会话已建立（单连接复用），开始按顺序执行部署步骤。");
+
     while (state.deploymentStepIndex < steps.length) {
       const step = steps[state.deploymentStepIndex];
       const ok = await runSingleDeployStep(step, steps);
@@ -433,6 +492,9 @@ async function runDeployStep() {
     log(`自动部署执行失败：${error.message || "未知错误"}。`);
   } finally {
     state.deploymentRunning = false;
+    state.cancelRequested = false;
+    closeActiveSession();
+    updateDeployRunnerState();
   }
 
   updateGenerateState();
@@ -1005,6 +1067,9 @@ function clearSensitiveData() {
   state.outputs = {};
   state.adminVerified = false;
   state.adminVerification = null;
+  closeActiveSession();
+  state.liveBuffer = "";
+  renderLiveOutput();
   ["vpsIp", "adminPassword", "privateKey", "keyPassphrase", "sudoPassword", "hostFingerprint"].forEach((id) => {
     el(id).value = "";
   });
@@ -1071,6 +1136,14 @@ function bindEvents() {
 
   el("testAdminSsh").addEventListener("click", testAdminSsh);
   el("runDeployStep").addEventListener("click", runDeployStep);
+  el("cancelDeployStep").addEventListener("click", () => {
+    if (!state.sessionId || !window.vpsDesktop?.cancelSessionStep) return;
+    state.cancelRequested = true;
+    window.vpsDesktop.cancelSessionStep(state.sessionId);
+    el("cancelDeployStep").disabled = true;
+    el("deployCurrentHint").textContent = "正在取消当前步骤...";
+    log("已请求取消当前部署步骤。");
+  });
   el("runAutofix").addEventListener("click", runAutofix);
   el("saveAiSettings").addEventListener("click", saveAiSettings);
   el("skipAiSettings").addEventListener("click", () => {
@@ -1205,5 +1278,6 @@ async function explainDiagnostics(kind) {
 
 bindEvents();
 applyAuthMethod();
+window.vpsDesktop?.onStepOutput?.(handleStepOutput);
 loadAiStatus();
 log("应用已在本地启动。当前仅提供标准部署模式和固定安全协议。");
