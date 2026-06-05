@@ -3,16 +3,6 @@ const protocols = {
     name: "VLESS + REALITY + Vision",
     summary: "默认推荐。安全、抗识别和稳定优先，适合大多数自托管 VPS。",
     port: "443"
-  },
-  hysteria2: {
-    name: "Hysteria2",
-    summary: "移动网络和速度优先时推荐。需要 UDP 可用，适合高丢包环境。",
-    port: "8443"
-  },
-  tuic: {
-    name: "TUIC v5",
-    summary: "UDP 可用且低延迟优先时推荐。适合对响应速度敏感的场景。",
-    port: "443"
   }
 };
 
@@ -43,7 +33,11 @@ const state = {
   autofixRaw: "",
   autofixSummary: "",
   stepResults: {},
-  deploymentOutcome: "idle"
+  deploymentOutcome: "idle",
+  ai: null,
+  sessionId: null,
+  liveBuffer: "",
+  cancelRequested: false
 };
 
 const el = (id) => document.getElementById(id);
@@ -51,6 +45,8 @@ const els = (selector) => Array.from(document.querySelectorAll(selector));
 
 const sensitivePatterns = [
   [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[IP已隐藏]"],
+  // IPv6：要求出现十六进制字母或 `::` 压缩段，避免误伤 12:34:56 这类时间戳。
+  [/(?<![0-9a-f:])(?=[0-9a-f:]*[a-f]|[0-9a-f:]*::)(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?:%[0-9a-z]+)?(?![0-9a-f:])/gi, "[IPv6已隐藏]"],
   [/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi, "[UUID已隐藏]"],
   [/(privateKey|password|passwd|pwd|uuid|shortId|server|address|host|sni)(\s*[:=]\s*)("[^"]+"|'[^']+'|[^\s,\n]+)/gi, "$1$2[已隐藏]"],
   [/vless:\/\/[^\s"']+/gi, "[订阅链接已隐藏]"],
@@ -233,8 +229,12 @@ function resetDeployFlow(shouldLog = true) {
   state.deploymentStepIndex = 0;
   state.deploymentCompleted = false;
   state.deploymentRunning = false;
+  state.cancelRequested = false;
   state.stepResults = {};
   state.deploymentOutcome = "idle";
+  state.liveBuffer = "";
+  renderLiveOutput();
+  closeActiveSession();
   el("deployRunStatus").classList.remove("success", "danger", "warning");
   el("deployRunStatus").classList.add("pending");
   el("deployRunStatus").textContent = "未开始";
@@ -253,6 +253,11 @@ function deployPrerequisitesReady() {
 function updateDeployRunnerState() {
   if (!el("runDeployStep")) return;
   el("runDeployStep").disabled = state.deploymentRunning || state.deploymentCompleted || !deployPrerequisitesReady();
+  const cancelBtn = el("cancelDeployStep");
+  if (cancelBtn) {
+    cancelBtn.hidden = !state.deploymentRunning;
+    cancelBtn.disabled = state.cancelRequested;
+  }
   if (state.deploymentCompleted) {
     el("runDeployStep").textContent = "自动部署已完成";
   } else if (state.deploymentRunning) {
@@ -261,6 +266,73 @@ function updateDeployRunnerState() {
     el("runDeployStep").textContent = "开始自动部署";
   }
   renderDeploySteps();
+}
+
+function renderLiveOutput() {
+  const out = el("deployLiveOutput");
+  if (!out) return;
+  out.hidden = !state.liveBuffer;
+  out.textContent = display(state.liveBuffer);
+  out.scrollTop = out.scrollHeight;
+}
+
+function handleStepOutput(data) {
+  if (!data || data.sessionId !== state.sessionId) return;
+  state.liveBuffer += data.chunk;
+  renderLiveOutput();
+}
+
+function closeActiveSession() {
+  if (state.sessionId && window.vpsDesktop?.closeSshSession) {
+    window.vpsDesktop.closeSshSession(state.sessionId);
+  }
+  state.sessionId = null;
+}
+
+// 弹出命令预览，返回用户是否确认执行的 Promise<boolean>。
+function confirmCommandPreview(title, script) {
+  return new Promise((resolve) => {
+    el("previewModalTitle").textContent = title;
+    el("previewModalBody").textContent = display(script);
+    const modal = el("previewModal");
+    const confirmBtn = el("previewConfirm");
+    const cancelBtn = el("previewCancel");
+    const settle = (decision) => {
+      modal.classList.add("hidden");
+      confirmBtn.removeEventListener("click", onConfirm);
+      cancelBtn.removeEventListener("click", onCancel);
+      resolve(decision);
+    };
+    const onConfirm = () => settle(true);
+    const onCancel = () => settle(false);
+    confirmBtn.addEventListener("click", onConfirm);
+    cancelBtn.addEventListener("click", onCancel);
+    modal.classList.remove("hidden");
+  });
+}
+
+// 生成整套部署各步骤的远端脚本预览文本（不连接、不执行）。
+async function buildDeployPlanPreview(steps) {
+  const v = values();
+  const sections = [];
+  for (const step of steps) {
+    const payload = {
+      action: step.id,
+      sshPort: v.sshPort,
+      servicePort: v.servicePort,
+      protocolName: protocols[state.protocol].name,
+      serverName: v.serverName,
+      force: false
+    };
+    if (step.id === "install-proxy-service" || step.id === "autofix-all") {
+      const secrets = await ensureSecrets();
+      payload.serverConfigJson = JSON.stringify(xrayServerConfig(v, secrets), null, 2);
+    }
+    const preview = await window.vpsDesktop.previewAction(payload);
+    const script = preview?.ok ? preview.script : `（无法生成预览：${preview?.error || "未知原因"}）`;
+    sections.push(`# ${step.title}\n${script}`);
+  }
+  return sections.join("\n\n────────────────────\n\n");
 }
 
 function showResultModal(title, text) {
@@ -295,11 +367,12 @@ function incompleteStepMessages() {
 
 function deployCredentialsFor(stepId) {
   const v = values();
-  const adminPassword = el("adminPassword").value;
   return {
     username: v.adminUser,
-    password: adminPassword,
-    sudoPassword: adminPassword
+    password: el("adminPassword").value,
+    privateKey: el("privateKey")?.value || "",
+    keyPassphrase: el("keyPassphrase")?.value || "",
+    sudoPassword: el("sudoPassword")?.value || ""
   };
 }
 
@@ -316,6 +389,8 @@ async function runSingleDeployStep(step, steps) {
     protocolName: protocols[state.protocol].name,
     username: creds.username,
     password: creds.password,
+    privateKey: creds.privateKey,
+    keyPassphrase: creds.keyPassphrase,
     sudoPassword: creds.sudoPassword,
     hostFingerprint: v.hostFingerprint,
     serverName: v.serverName,
@@ -332,9 +407,11 @@ async function runSingleDeployStep(step, steps) {
   el("deployRunStatus").textContent = "执行中";
   el("deployCurrentTitle").textContent = step.title;
   el("deployCurrentHint").textContent = step.hint || "正在安装或配置，请等待。不要关闭应用。";
+  state.liveBuffer = `# ${step.title}\n`;
+  renderLiveOutput();
   updateDeployRunnerState();
 
-  const result = await window.vpsDesktop.runDeploymentAction(payload);
+  const result = await window.vpsDesktop.runSessionStep({ sessionId: state.sessionId, ...payload });
 
   if (!result.ok) {
     state.stepResults[step.id] = {
@@ -406,7 +483,7 @@ async function runSingleDeployStep(step, steps) {
 
 async function runDeployStep() {
   const desktopApi = window.vpsDesktop;
-  if (!desktopApi?.runDeploymentAction) {
+  if (!desktopApi?.openSshSession || !desktopApi?.runSessionStep) {
     showResultModal("无法开始自动部署", "当前是 Web 预览版，不能直接执行远程部署。请使用桌面版。");
     log("当前环境不支持远程部署执行，请使用 Electron 桌面版。");
     return;
@@ -418,12 +495,52 @@ async function runDeployStep() {
   }
 
   const steps = deploySteps();
+
+  if (el("previewBeforeRun")?.checked && desktopApi.previewAction) {
+    try {
+      const plan = await buildDeployPlanPreview(steps);
+      const confirmed = await confirmCommandPreview("执行前确认整套部署命令", plan);
+      if (!confirmed) {
+        log("已在执行前取消整套部署，未连接服务器。");
+        return;
+      }
+    } catch (error) {
+      showResultModal("无法生成命令预览", error.message || "预览失败，请重试。");
+      log(`生成命令预览失败：${error.message || "未知错误"}。`);
+      return;
+    }
+  }
+
   state.deploymentRunning = true;
+  state.cancelRequested = false;
   el("deployRunStatus").textContent = "自动部署中";
-  el("deployCurrentHint").textContent = "正在按顺序执行部署步骤，请等待。";
+  el("deployCurrentHint").textContent = "正在建立 SSH 会话...";
   updateDeployRunnerState();
 
   try {
+    const v = values();
+    const creds = deployCredentialsFor("verify-deploy-user");
+    const session = await desktopApi.openSshSession({
+      host: v.ip,
+      port: v.sshPort,
+      username: creds.username,
+      password: creds.password,
+      privateKey: creds.privateKey,
+      keyPassphrase: creds.keyPassphrase,
+      sudoPassword: creds.sudoPassword,
+      hostFingerprint: v.hostFingerprint
+    });
+    if (!session?.ok) {
+      el("deployRunStatus").classList.remove("pending");
+      el("deployRunStatus").classList.add("danger");
+      el("deployRunStatus").textContent = "❌ 未完成";
+      showResultModal("无法建立 SSH 会话", session?.error || "连接失败，请检查网络与凭据。");
+      log(`建立 SSH 会话失败：${session?.error || "未知错误"}。`);
+      return;
+    }
+    state.sessionId = session.sessionId;
+    log("SSH 会话已建立（单连接复用），开始按顺序执行部署步骤。");
+
     while (state.deploymentStepIndex < steps.length) {
       const step = steps[state.deploymentStepIndex];
       const ok = await runSingleDeployStep(step, steps);
@@ -437,9 +554,19 @@ async function runDeployStep() {
     log(`自动部署执行失败：${error.message || "未知错误"}。`);
   } finally {
     state.deploymentRunning = false;
+    state.cancelRequested = false;
+    closeActiveSession();
+    updateDeployRunnerState();
   }
 
   updateGenerateState();
+}
+
+function applyAuthMethod() {
+  const isKey = el("authMethod").value === "privateKey";
+  el("pwdField").hidden = isKey;
+  el("keyField").hidden = !isKey;
+  el("passphraseField").hidden = !isKey;
 }
 
 function setAdminVerification(status, message) {
@@ -467,7 +594,7 @@ async function testAdminSsh() {
   }
 
   const v = values();
-  const password = el("adminPassword").value;
+  const creds = deployCredentialsFor("verify-deploy-user");
   const button = el("testAdminSsh");
   button.disabled = true;
   button.textContent = "正在测试...";
@@ -479,7 +606,10 @@ async function testAdminSsh() {
       host: v.ip,
       port: v.sshPort,
       username: v.adminUser,
-      password,
+      password: creds.password,
+      privateKey: creds.privateKey,
+      keyPassphrase: creds.keyPassphrase,
+      sudoPassword: creds.sudoPassword,
       hostFingerprint: v.hostFingerprint
     });
 
@@ -551,7 +681,7 @@ sudo systemctl --no-pager --full status xray
 sudo ss -tulpen | grep ":\${SERVICE_PORT}" || (echo "服务端口未监听" >&2; exit 1)
 
 echo "[7/8] 确认 SSH 端口仍开放"
-sudo ufw status | grep "\${SSH_PORT}/tcp" || (echo "SSH 端口未开放，停止删除临时账号" >&2; exit 1)
+sudo ufw status | grep "\${SSH_PORT}/tcp" || (echo "SSH 端口未在防火墙放行，请人工核对后再断开当前连接" >&2; exit 1)
 
 echo "[8/8] 完成部署"
 echo "部署完成。以后请继续使用长期管理员账号 ${v.adminUser} 管理 VPS。"
@@ -712,7 +842,7 @@ function report(v) {
 客户端配置生成状态: ${clients} 已在本地生成
 长期管理员验证状态: ${state.adminVerified ? "已通过 SSH 登录和 sudo 测试" : "未通过"}
 部署身份策略: 直接使用长期管理员账号 ${v.adminUser} 部署
-AI 辅助状态: 未启用
+AI 辅助状态: ${state.ai?.enabled ? (state.ai?.hasKey ? "已启用（仅本地解读，发送前脱敏）" : "已开启但未配置密钥") : "未启用"}
 Host key 指纹: ${v.hostFingerprint || "用户尚未填写"}
 BBR 状态: ${state.bbrSummary || "未在部署步骤中检测"}
 Claude 连通性: ${state.claudeSummary || "未在部署步骤中检测"}
@@ -915,6 +1045,8 @@ async function runAutofix() {
     protocolName: protocols[state.protocol].name,
     username: creds.username,
     password: creds.password,
+    privateKey: creds.privateKey,
+    keyPassphrase: creds.keyPassphrase,
     sudoPassword: creds.sudoPassword,
     hostFingerprint: v.hostFingerprint,
     serverName: v.serverName,
@@ -945,6 +1077,7 @@ async function runAutofix() {
     state.autofixRaw = result.stdout || "";
     state.autofixSummary = autofixSummaryText(result.stdout || "");
     state.outputs.autofix = extractAutofixReport(result.stdout || "");
+    el("explainAutofix").disabled = !(state.ai?.enabled && state.ai?.hasKey) || !state.autofixRaw;
     el("autofixStatus").classList.remove("pending", "danger", "warning");
     el("autofixStatus").classList.add(/部分修复|遗留告警/.test(state.autofixSummary) ? "warning" : "success");
     el("autofixStatus").textContent = /部分修复|遗留告警/.test(state.autofixSummary) ? "部分完成" : "已完成";
@@ -996,7 +1129,10 @@ function clearSensitiveData() {
   state.outputs = {};
   state.adminVerified = false;
   state.adminVerification = null;
-  ["vpsIp", "adminPassword", "hostFingerprint"].forEach((id) => {
+  closeActiveSession();
+  state.liveBuffer = "";
+  renderLiveOutput();
+  ["vpsIp", "adminPassword", "privateKey", "keyPassphrase", "sudoPassword", "hostFingerprint"].forEach((id) => {
     el(id).value = "";
   });
   setAdminVerification("pending", "敏感数据已清空，请重新测试长期管理员账号。");
@@ -1036,11 +1172,18 @@ function bindEvents() {
     log(`客户端配置选择已更新：${clientSelectionText()}。`);
   });
 
-  ["vpsIp", "sshPort", "adminUser", "adminPassword"].forEach((id) => {
+  ["vpsIp", "sshPort", "adminUser", "adminPassword", "privateKey", "keyPassphrase", "sudoPassword"].forEach((id) => {
     el(id).addEventListener("input", () => {
       resetAdminVerification();
       resetDeployFlow(false);
     });
+  });
+
+  el("authMethod").addEventListener("change", () => {
+    applyAuthMethod();
+    resetAdminVerification();
+    resetDeployFlow(false);
+    log(el("authMethod").value === "privateKey" ? "已切换为私钥登录。" : "已切换为密码登录。");
   });
 
   ["servicePort", "serverName", "hostFingerprint"].forEach((id) => {
@@ -1055,7 +1198,22 @@ function bindEvents() {
 
   el("testAdminSsh").addEventListener("click", testAdminSsh);
   el("runDeployStep").addEventListener("click", runDeployStep);
+  el("cancelDeployStep").addEventListener("click", () => {
+    if (!state.sessionId || !window.vpsDesktop?.cancelSessionStep) return;
+    state.cancelRequested = true;
+    window.vpsDesktop.cancelSessionStep(state.sessionId);
+    el("cancelDeployStep").disabled = true;
+    el("deployCurrentHint").textContent = "正在取消当前步骤...";
+    log("已请求取消当前部署步骤。");
+  });
   el("runAutofix").addEventListener("click", runAutofix);
+  el("saveAiSettings").addEventListener("click", saveAiSettings);
+  el("skipAiSettings").addEventListener("click", () => {
+    const panel = el("aiEnabled").closest(".ai-panel");
+    if (panel) panel.open = false;
+    log("已跳过 AI 配置，可稍后在「AI 诊断解读」中开启。");
+  });
+  el("explainAutofix").addEventListener("click", () => explainDiagnostics("autofix"));
   el("resetDeployFlow").addEventListener("click", () => resetDeployFlow(true));
   el("generateAll").addEventListener("click", generateAll);
   el("clearSecrets").addEventListener("click", clearSensitiveData);
@@ -1100,5 +1258,88 @@ function bindEvents() {
   });
 }
 
+function applyAiStatus(status) {
+  state.ai = status || { enabled: false, hasKey: false };
+  const dot = el("aiStatus");
+  const enabledAndReady = Boolean(status?.enabled && status?.hasKey);
+  dot.classList.remove("pending", "success", "danger", "warning");
+  dot.classList.add(enabledAndReady ? "success" : "pending");
+  dot.textContent = enabledAndReady ? "已启用" : status?.enabled ? "缺少密钥" : "未启用";
+
+  el("aiEnabled").checked = Boolean(status?.enabled);
+  if (status?.baseUrl) el("aiBaseUrl").value = status.baseUrl;
+  if (status?.model) el("aiModel").value = status.model;
+  el("aiSettingsHint").textContent = enabledAndReady
+    ? "AI 解读已就绪，可在自愈报告下点击「AI 解读诊断」。"
+    : status?.enabled
+      ? "已启用但缺少密钥，请填写 API Key 后保存。"
+      : "未启用 AI 接口。开启并保存密钥后即可使用。";
+
+  el("explainAutofix").disabled = !enabledAndReady || !state.autofixRaw;
+}
+
+async function loadAiStatus() {
+  if (!window.vpsDesktop?.getAiStatus) return;
+  try {
+    applyAiStatus(await window.vpsDesktop.getAiStatus());
+  } catch (_error) {
+    applyAiStatus({ enabled: false, hasKey: false });
+  }
+}
+
+async function saveAiSettings() {
+  if (!window.vpsDesktop?.saveAiSettings) return;
+  const button = el("saveAiSettings");
+  button.disabled = true;
+  try {
+    const status = await window.vpsDesktop.saveAiSettings({
+      enabled: el("aiEnabled").checked,
+      apiKey: el("aiApiKey").value,
+      baseUrl: el("aiBaseUrl").value.trim(),
+      model: el("aiModel").value.trim()
+    });
+    el("aiApiKey").value = "";
+    applyAiStatus(status);
+    log("已保存 AI 设置。");
+  } catch (_error) {
+    el("aiSettingsHint").textContent = "保存 AI 设置失败，请重试。";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function explainDiagnostics(kind) {
+  const rawByKind = { autofix: state.autofixRaw, claude: state.claudeRaw, bbr: state.bbrRaw };
+  const raw = rawByKind[kind] || "";
+  const output = el("aiExplainOutput");
+  if (!raw) {
+    showResultModal("暂无可解读内容", "请先执行一次自愈或诊断，再使用 AI 解读。");
+    return;
+  }
+  if (!window.vpsDesktop?.explainDiagnostics) return;
+
+  const button = el("explainAutofix");
+  button.disabled = true;
+  output.hidden = false;
+  output.textContent = "AI 正在解读诊断输出，请稍候...";
+  try {
+    const result = await window.vpsDesktop.explainDiagnostics({ kind, text: raw });
+    if (result?.ok) {
+      output.textContent = result.text;
+      log("AI 已生成诊断解读。");
+    } else {
+      output.textContent = `AI 解读不可用：${result?.error || "未知原因"}。以下为本地规则总结：\n\n${state.autofixSummary || "无"}`;
+      log(`AI 解读失败，已回退本地总结：${result?.error || "未知原因"}。`);
+    }
+  } catch (error) {
+    output.textContent = `AI 解读出错：${error.message || "未知错误"}。以下为本地规则总结：\n\n${state.autofixSummary || "无"}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 bindEvents();
+applyAuthMethod();
+window.vpsDesktop?.onStepOutput?.(handleStepOutput);
+loadAiStatus();
 log("应用已在本地启动。当前仅提供标准部署模式和固定安全协议。");

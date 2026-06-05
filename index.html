@@ -59,8 +59,27 @@
                 <input id="adminUser" autocomplete="off" value="myadmin" />
               </label>
               <label>
+                <span>登录方式</span>
+                <select id="authMethod">
+                  <option value="password">密码登录</option>
+                  <option value="privateKey">私钥登录</option>
+                </select>
+              </label>
+              <label id="pwdField">
                 <span>长期管理员密码</span>
                 <input id="adminPassword" type="password" autocomplete="new-password" placeholder="仅用于本机 SSH 验证，不保存" />
+              </label>
+              <label id="keyField" class="span-2" hidden>
+                <span>SSH 私钥（PEM，仅保存在本页内存）</span>
+                <textarea id="privateKey" rows="4" autocomplete="off" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+              </label>
+              <label id="passphraseField" hidden>
+                <span>私钥 passphrase（如有）</span>
+                <input id="keyPassphrase" type="password" autocomplete="off" placeholder="私钥已加密时填写" />
+              </label>
+              <label>
+                <span>sudo 密码（可选）</span>
+                <input id="sudoPassword" type="password" autocomplete="off" placeholder="留空=用登录密码；私钥+NOPASSWD 可留空" />
               </label>
               <label class="span-2">
                 <span>首次 SSH 连接看到的 host key 指纹</span>
@@ -129,10 +148,16 @@ sudo whoami</code></pre>
               <div class="runner-console">
                 <div class="runner-title" id="deployCurrentTitle">等待开始</div>
                 <p id="deployCurrentHint">完成 SSH 验证后，点击开始部署。</p>
+                <label class="toggle-inline">
+                  <input id="previewBeforeRun" type="checkbox" checked />
+                  <span>执行前预览并确认所有命令（可审计）</span>
+                </label>
                 <div class="actions">
                   <button class="primary" id="runDeployStep" type="button" disabled>开始自动部署</button>
+                  <button class="secondary" id="cancelDeployStep" type="button" hidden>取消当前步骤</button>
                   <button class="ghost" id="resetDeployFlow" type="button">重置部署流程</button>
                 </div>
+                <pre class="runner-live" id="deployLiveOutput" hidden></pre>
               </div>
             </div>
           </section>
@@ -166,9 +191,48 @@ sudo whoami</code></pre>
             </div>
             <div class="actions">
               <button class="secondary" id="runAutofix" type="button">执行自动修复</button>
+              <button class="ghost" id="explainAutofix" type="button" disabled>AI 解读诊断</button>
             </div>
             <p class="hint" id="autofixResult">部署后如果发现 Claude / DNS / IPv6 / BBR / Xray / 防火墙异常，可以在这里直接一键自愈修复。</p>
+            <pre class="ai-output" id="aiExplainOutput" hidden></pre>
           </section>
+
+          <details class="panel ai-panel">
+            <summary class="ai-summary">
+              <div class="ai-summary-text">
+                <p class="eyebrow">可选增强 · 可随时跳过</p>
+                <h2>AI 诊断解读</h2>
+                <span class="ai-optional-note">不配置也能正常部署，仅在想要自然语言排错时才需要</span>
+              </div>
+              <span class="status-dot pending" id="aiStatus">未启用</span>
+            </summary>
+            <div class="ai-body">
+              <p class="muted">开启后，自愈/诊断的输出会在 <strong>脱敏</strong>（IP、域名、密钥等替换为占位符）后发送到所配置的 AI 接口，仅用于生成自然语言解读。密钥保存在本机，不会发往渲染界面或写入日志。AI 只解读，不会生成或执行任何远程命令。</p>
+              <label class="toggle-inline">
+                <input id="aiEnabled" type="checkbox" />
+                <span>启用 AI 解读（可先不填密钥保存，以后再补）</span>
+              </label>
+              <div class="form-grid">
+                <label>
+                  <span>接口密钥（API Key）</span>
+                  <input id="aiApiKey" type="password" autocomplete="off" placeholder="已保存则留空表示不修改" />
+                </label>
+                <label>
+                  <span>接口地址</span>
+                  <input id="aiBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com" />
+                </label>
+                <label>
+                  <span>模型</span>
+                  <input id="aiModel" autocomplete="off" placeholder="deepseek-chat" />
+                </label>
+              </div>
+              <div class="actions">
+                <button class="secondary" id="saveAiSettings" type="button">保存 AI 设置</button>
+                <button class="ghost" id="skipAiSettings" type="button">暂不配置</button>
+              </div>
+              <p class="hint" id="aiSettingsHint">未配置 AI 接口。这是可选项，可直接跳过；配置后可在自愈报告下点击「AI 解读诊断」。</p>
+            </div>
+          </details>
 
           <section class="panel">
             <div class="section-head">
@@ -228,6 +292,23 @@ sudo whoami</code></pre>
         </div>
       </section>
     </main>
+
+    <div class="modal hidden" id="previewModal" role="dialog" aria-modal="true" aria-labelledby="previewModalTitle">
+      <div class="modal-card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">执行前确认</p>
+            <h2 id="previewModalTitle">即将在 VPS 上执行以下命令</h2>
+          </div>
+        </div>
+        <p class="muted">以下脚本会通过 SSH 下发到服务器执行。请确认无误后再继续；敏感字段按当前显示设置打码。</p>
+        <pre class="output" id="previewModalBody"></pre>
+        <div class="actions">
+          <button class="primary" id="previewConfirm" type="button">确认执行</button>
+          <button class="ghost" id="previewCancel" type="button">取消部署</button>
+        </div>
+      </div>
+    </div>
 
     <div class="modal hidden" id="resultModal" role="dialog" aria-modal="true" aria-labelledby="resultModalTitle">
       <div class="modal-card">

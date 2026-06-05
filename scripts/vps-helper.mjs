@@ -7,8 +7,13 @@ import process from "node:process";
 import { Client } from "ssh2";
 import { helperActionScript } from "./remote-actions.cjs";
 import sshTrust from "./ssh-trust.cjs";
+import sshAuth from "./ssh-auth.cjs";
 
 const { createHostVerifier } = sshTrust;
+const { buildSshAuth, hasCredential, resolveSudoPassword } = sshAuth;
+
+// 远程命令整体看门狗，防止命令卡死导致 CLI 永不退出。
+const REMOTE_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
 
 function usage() {
   console.log(`vps-helper autofix [target] [options]
@@ -26,7 +31,9 @@ Options:
   --port            SSH port, default 22
   --username        SSH username
   --password        SSH password, prefer VPS_PASSWORD env to avoid shell history
-  --sudo-password   sudo password, default same as --password
+  --private-key     SSH private key file path or inline PEM (alternative to --password)
+  --key-passphrase  passphrase for the private key, if encrypted
+  --sudo-password   sudo password, default same as --password (empty = NOPASSWD)
   --host-fingerprint expected SSH host key fingerprint, SHA256:...
   --ssh-port        current SSH service port, default same as --port
   --service-port    proxy service port, default 443
@@ -35,7 +42,7 @@ Options:
   --force           allow Level 3 high-risk fixes
 
 Env fallback:
-  VPS_HOST VPS_PORT VPS_USER VPS_PASSWORD VPS_SUDO_PASSWORD VPS_HOST_FINGERPRINT VPS_SSH_PORT VPS_SERVICE_PORT VPS_SERVER_NAME
+  VPS_HOST VPS_PORT VPS_USER VPS_PASSWORD VPS_PRIVATE_KEY VPS_KEY_PASSPHRASE VPS_SUDO_PASSWORD VPS_HOST_FINGERPRINT VPS_SSH_PORT VPS_SERVICE_PORT VPS_SERVER_NAME
 `);
 }
 
@@ -82,7 +89,16 @@ function knownHostsPath() {
   return process.env.VPS_HELPER_KNOWN_HOSTS || path.join(os.homedir(), ".vps-helper-known-hosts.json");
 }
 
-function runSshAction({ host, port, username, password, sudoPassword, action, actionPayload, expectedHostFingerprint }) {
+// 私钥可传文件路径或内联 PEM；内联以 -----BEGIN 开头时直接使用，否则按路径读取。
+function loadPrivateKey(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return "";
+  if (raw.startsWith("-----BEGIN")) return raw;
+  const filePath = raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
+  return fs.readFileSync(filePath, "utf8");
+}
+
+function runSshAction({ host, port, username, password, privateKey, keyPassphrase, sudoPassword, action, actionPayload, expectedHostFingerprint }) {
   return new Promise((resolve) => {
     const conn = new Client();
     let settled = false;
@@ -101,9 +117,11 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
       expectedFingerprint: expectedHostFingerprint
     });
 
+    let watchdog = null;
     const finish = (patch = {}) => {
       if (settled) return;
       settled = true;
+      if (watchdog) clearTimeout(watchdog);
       Object.assign(result, patch);
       conn.end();
       resolve(result);
@@ -117,6 +135,10 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
       return;
     }
 
+    watchdog = setTimeout(() => {
+      finish({ error: "autofix 执行超时，远程命令长时间无响应。" });
+    }, REMOTE_EXEC_TIMEOUT_MS);
+
     conn
       .on("ready", () => {
         const wrapped = `sudo -S -p '' bash -lc ${shellQuote(script)}`;
@@ -127,6 +149,9 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
           }
 
           stream
+            .on("error", (streamError) => {
+              finish({ error: streamError.message || "SSH 执行通道异常中断。" });
+            })
             .on("close", (code) => {
               finish({
                 ok: code === 0,
@@ -140,7 +165,7 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
               result.stderr += data.toString("utf8");
             });
 
-          stream.write(`${sudoPassword || password}\n`);
+          stream.write(`${resolveSudoPassword({ sudoPassword, password })}\n`);
           stream.end();
         });
       })
@@ -151,7 +176,7 @@ function runSshAction({ host, port, username, password, sudoPassword, action, ac
         host,
         port: Number(port) || 22,
         username,
-        password,
+        ...buildSshAuth({ password, privateKey, passphrase: keyPassphrase }),
         readyTimeout: 15000,
         keepaliveInterval: 5000,
         hostHash: verifier.hostHash,
@@ -177,16 +202,18 @@ async function main() {
   const host = args.host || process.env.VPS_HOST;
   const port = args.port || process.env.VPS_PORT || "22";
   const username = args.username || process.env.VPS_USER;
-  const password = args.password || process.env.VPS_PASSWORD;
-  const sudoPassword = args["sudo-password"] || process.env.VPS_SUDO_PASSWORD || password;
+  const password = args.password || process.env.VPS_PASSWORD || "";
+  const sudoPassword = args["sudo-password"] || process.env.VPS_SUDO_PASSWORD || "";
+  const privateKey = loadPrivateKey(args["private-key"] || process.env.VPS_PRIVATE_KEY || "");
+  const keyPassphrase = args["key-passphrase"] || process.env.VPS_KEY_PASSPHRASE || "";
   const expectedHostFingerprint = args["host-fingerprint"] || process.env.VPS_HOST_FINGERPRINT || "";
   const sshPort = args["ssh-port"] || process.env.VPS_SSH_PORT || port;
   const servicePort = args["service-port"] || process.env.VPS_SERVICE_PORT || "443";
   const serverName = args["server-name"] || process.env.VPS_SERVER_NAME || "www.cloudflare.com";
 
-  if (!host || !username || !password) {
+  if (!host || !username || !hasCredential({ password, privateKey })) {
     usage();
-    throw new Error("缺少 --host / --username / --password。");
+    throw new Error("缺少 --host / --username，以及 --password 或 --private-key。");
   }
 
   let serverConfigJson = "";
@@ -209,6 +236,8 @@ async function main() {
     port,
     username,
     password,
+    privateKey,
+    keyPassphrase,
     sudoPassword,
     action,
     actionPayload: payload,
